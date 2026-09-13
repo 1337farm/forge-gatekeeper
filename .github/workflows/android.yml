@@ -1,0 +1,112 @@
+name: Android CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  # Same safeguard as forgerig: automerge pushes with GITHUB_TOKEN do not
+  # raise `push` events, so the automerge job dispatches this workflow on main
+  # to rebuild + republish the rolling `latest` AAR release.
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: 1337farm/actions/setup-jdk@v1
+        with:
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: 1337farm/actions/setup-android-env@v1
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run library unit tests
+        run: ./gradlew :nanogatekeeper:testDebugUnitTest --stacktrace
+
+  package-aar:
+    name: aar
+    runs-on: ubuntu-latest
+    needs: [test]
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: 1337farm/actions/setup-jdk@v1
+        with:
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: 1337farm/actions/setup-android-env@v1
+
+      - name: Grant execute permission
+        run: chmod +x gradlew scripts/smoke-test.sh
+
+      - name: Smoke test (unit + AAR + archive checks)
+        run: bash scripts/smoke-test.sh
+
+      - name: Upload AAR artifact
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: NanoGatekeeper-AAR
+          path: nanogatekeeper/build/outputs/aar/nanogatekeeper-release.aar
+          retention-days: 30
+
+      - name: Publish AAR release
+        if: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          OUT="$RUNNER_TEMP/aar-release"
+          mkdir -p "$OUT"
+          AAR="$(find nanogatekeeper/build/outputs/aar -name 'nanogatekeeper-release.aar' | head -1)"
+          [ -n "$AAR" ] || { echo "ERROR: no nanogatekeeper-release.aar to publish"; exit 1; }
+          SHA="${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"
+          SHA="$(printf '%s' "$SHA" | cut -c1-10)"
+          AAR_NAME="nanogatekeeper-release-$SHA.aar"
+          cp "$AAR" "$OUT/$AAR_NAME"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          SUM="$(sha256sum "$OUT/$AAR_NAME" | cut -d' ' -f1)"
+          printf '{"commit":"%s","built_at":"%s","files":{"%s":"%s"}}\n' \
+            "$SHA" "$DATE" "$AAR_NAME" "$SUM" > "$OUT/aar-manifest.json"
+          gh release delete latest --yes --cleanup-tag --repo "${{ github.repository }}" 2>/dev/null || true
+          gh release create latest "$OUT/$AAR_NAME" "$OUT/aar-manifest.json" --repo "${{ github.repository }}" \
+            --title "NanoGatekeeper AAR (latest)" \
+            --notes "Rolling release AAR built from source. Re-published on every green build."
+
+  automerge:
+    name: Auto-merge PR
+    needs: [package-aar]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      pull-requests: write
+      contents: write
+      actions: write
+    steps:
+      - name: Merge PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --squash --delete-branch
+
+      - name: Rebuild and republish latest from main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run android.yml --repo "${{ github.repository }}" --ref main

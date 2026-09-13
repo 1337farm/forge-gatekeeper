@@ -1,0 +1,10 @@
+# .babysitrc values for nanogatekeeper (KEY=VALUE, sourced by babysit-pr.sh
+# from 1337farm/pr-babysitter; install: curl -fsSL
+# https://raw.githubusercontent.com/1337farm/pr-babysitter/v1/babysit-pr.sh).
+# CLI flags (--artifact=… etc.) override these.
+# Library publishes an AAR (not APK): artifact + release carry the AAR.
+APK_ARTIFACT="NanoGatekeeper-AAR"
+MAIN_WORKFLOW="android.yml"
+RELEASE_TAG="latest"
+APK_GLOB="nanogatekeeper-*.aar"
+LOG_GLOB="nanogatekeeper-*.log*"
