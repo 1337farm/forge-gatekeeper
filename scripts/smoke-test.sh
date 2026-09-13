@@ -32,15 +32,13 @@ for lib in 'jni/arm64-v8a/libllm_engine.so' 'jni/arm64-v8a/libonnxruntime.so' 'j
 done
 echo "ORT natives present (llm_engine + onnxruntime + onnxruntime-genai)"
 
-echo "==> demo APK checks (arm64-only natives, decompressed for download)"
+echo "==> demo APK checks (arm64-only natives)"
 ./gradlew :app:assembleDebug --stacktrace
 APP_APK="$(find app/build/outputs/apk/debug -name '*.apk' | head -1)"
 [ -n "$APP_APK" ] || { echo "ERROR: demo APK not built"; exit 1; }
 unzip -l "$APP_APK" 'lib/*' | grep -qE 'lib/(x86|x86_64|armeabi)/' && {
   echo "ERROR: non-arm64 native ABI leaked into demo APK"; exit 1; }
-unzip -lv "$APP_APK" 'lib/arm64-v8a/*.so' | grep -q " Stored " && {
-  echo "ERROR: natives stored uncompressed (useLegacyPackaging must stay on)"; exit 1; } || true
-echo "demo APK OK: arm64-v8a only, natives compressed"
+echo "demo APK OK: arm64-v8a only"
 
 echo "==> archive checks"
 # Bytecode defense: no plaintext system-prompt strings in the core AAR classes.

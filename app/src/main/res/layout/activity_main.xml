@@ -50,7 +50,9 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="@string/open_ort_demo" />
+            android:text="@string/open_ort_demo"
+            android:enabled="false"
+            android:visibility="gone" />
 
         <Switch
             android:id="@+id/bypassGatekeeper"
