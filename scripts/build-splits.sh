@@ -66,8 +66,11 @@ bt extract-apks --apks="$WORK/app.apks" --device-spec="$WORK/device-spec.json" \
   --output-dir="$WORK/extract"
 BASE="$(find "$WORK/extract" -maxdepth 1 -name 'base-master.apk' | head -1)"
 SPLIT="$(find "$WORK/extract" -maxdepth 1 -name 'split_config.arm64_v8a.apk' | head -1)"
+# Legacy packaging (useLegacyPackaging) folds the arm64 config split into a
+# per-ABI base variant instead of split_config.*: accept either as runtime.
+[ -z "$SPLIT" ] && SPLIT="$(find "$WORK/extract" -maxdepth 1 -name 'base-arm64_v8a.apk' | head -1)"
 [ -n "$BASE" ] && [ -n "$SPLIT" ] || {
-  echo "ERROR: base or split_config.arm64_v8a.apk missing from APK set:"; ls -1 "$WORK/extract"; exit 1; }
+  echo "ERROR: base or arm64 runtime APK missing from APK set:"; ls -1 "$WORK/extract"; exit 1; }
 
 # Structural gates. The base must be natives-free (code+resources only) and the
 # split must carry the real ORT natives; a malformed bundle must never publish.
