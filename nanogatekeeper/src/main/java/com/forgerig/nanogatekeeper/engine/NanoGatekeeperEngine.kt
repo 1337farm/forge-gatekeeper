@@ -324,7 +324,7 @@ class NanoGatekeeperEngine(
             breaker.recordFailure()
             throw e
         }
-        if (!acquired) throw TimeoutCancellationException("NPU queue wait exhausted")
+        if (!acquired) throw TimeoutCancellationException("NPU queue wait exhausted", null)
         try {
             return withTimeout(config.npuExecutionTimeoutMs) {
                 inference.generate(systemPrompt, userContent)
