@@ -160,6 +160,7 @@ object ModelDownloader {
             FileOutputStream(tmp).use { out ->
                 val buf = ByteArray(256 * 1024)
                 var done = 0L
+                val total = conn.contentLengthLong
                 while (true) {
                     val n = input.read(buf)
                     if (n < 0) break
