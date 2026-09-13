@@ -9,6 +9,7 @@ import android.widget.EditText
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.Switch
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.forgerig.gatekeeper.engine.GatekeeperEngine
@@ -50,6 +51,10 @@ class DemoActivity : AppCompatActivity() {
         val outputView = findViewById<TextView>(R.id.outputView)
         val telemetryView = findViewById<TextView>(R.id.telemetryView)
         val ortDemoButton = findViewById<Button>(R.id.ortDemoButton)
+        ortDemoButton.setOnClickListener {
+            startActivity(android.content.Intent(this, MainActivity::class.java))
+        }
+        val bypassSwitch = findViewById<Switch>(R.id.bypassGatekeeper)
         ortDemoButton.setOnClickListener {
             startActivity(android.content.Intent(this, MainActivity::class.java))
         }
@@ -147,12 +152,28 @@ class DemoActivity : AppCompatActivity() {
                     if (picked == null) {
                         statusView.text = "No local model — hit Download above " +
                             "(defaults to a tokenless public ORT model) or adb push a folder."
-                        return@launch
-                    }
-                    val engine = localEngineFor(picked)
-                    val mode = if (picked.isDirectory) "[ORT native] " else "[MediaPipe] "
-                    val result = engine.processPrompt(raw, GatekeeperConfig())
-                    render(result, statusView, outputView, telemetryView, mode)
+return@launch
+            }
+            // Bypass gatekeeper pipeline if requested
+            val bypass = bypassSwitch.isChecked
+            if (bypass) {
+                val client: InferenceClient = if (picked.isDirectory) {
+                    OrtGenAiClient(applicationContext, picked)
+                } else {
+                    MediaPipeLlmClient(applicationContext, picked)
+                }
+                localClient = client as AutoCloseable
+                val rawResult = client.generate("", raw)
+                val mode = if (picked.isDirectory) "[ORT native] " else "[MediaPipe] "
+                statusView.text = "$mode RAW (gatekeeper bypassed)"
+                outputView.text = rawResult
+                telemetryView.text = "Gatekeeper pipeline bypassed — no sanitization, redaction, compression, or audit."
+            } else {
+                val engine = localEngineFor(picked)
+                val mode = if (picked.isDirectory) "[ORT native] " else "[MediaPipe] "
+                val result = engine.processPrompt(raw, GatekeeperConfig())
+                render(result, statusView, outputView, telemetryView, mode)
+            }
                 } catch (t: Throwable) {
                     statusView.text = "Error: ${t.message}"
                 } finally {

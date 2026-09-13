@@ -52,6 +52,13 @@
             android:layout_marginTop="8dp"
             android:text="@string/open_ort_demo" />
 
+        <Switch
+            android:id="@+id/bypassGatekeeper"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="left"
+            android:text="@string/bypass_gatekeeper" />
+
         <EditText
             android:id="@+id/modelUrl"
             android:layout_width="match_parent"
