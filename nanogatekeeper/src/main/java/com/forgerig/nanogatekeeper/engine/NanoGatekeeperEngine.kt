@@ -315,16 +315,14 @@ class NanoGatekeeperEngine(
         systemPrompt: String, userContent: String,
         config: GatekeeperConfig, breaker: CircuitBreaker
     ): String {
-        val acquired: Boolean = try {
+        try {
             withTimeout(config.queueWaitTimeoutMs) {
                 npuMutex.lock()
-                true
             }
         } catch (e: TimeoutCancellationException) {
             breaker.recordFailure()
             throw e
         }
-        if (!acquired) throw TimeoutCancellationException("NPU queue wait exhausted", null)
         try {
             return withTimeout(config.npuExecutionTimeoutMs) {
                 inference.generate(systemPrompt, userContent)
