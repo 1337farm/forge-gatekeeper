@@ -59,7 +59,11 @@ bt build-apks --bundle="$AAB" --output="$WORK/app.apks" --mode=default \
   --ks="$KS" --ks-pass="pass:$KS_PASS" --ks-key-alias="$KS_ALIAS"
 
 echo "==> extract base + arm64 config split"
-bt extract-apks --apks="$WORK/app.apks" --output-dir="$WORK/extract"
+cat > "$WORK/device-spec.json" <<'EOF'
+{ "supported_abis": ["arm64-v8a"] }
+EOF
+bt extract-apks --apks="$WORK/app.apks" --device-spec="$WORK/device-spec.json" \
+  --output-dir="$WORK/extract"
 BASE="$(find "$WORK/extract" -maxdepth 1 -name 'base-master.apk' | head -1)"
 SPLIT="$(find "$WORK/extract" -maxdepth 1 -name 'split_config.arm64_v8a.apk' | head -1)"
 [ -n "$BASE" ] && [ -n "$SPLIT" ] || {
