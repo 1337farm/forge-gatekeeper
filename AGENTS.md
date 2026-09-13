@@ -29,8 +29,8 @@ APK on disk. Use `--latest-apk` instead only when you want the republished
 
 ## Before committing: verify the build
 - Unit tests (no device needed):
-  `./gradlew :nanogatekeeper:testDebugUnitTest :nanogatekeeper-litert:testDebugUnitTest :app:testDebugUnitTest --stacktrace`
+  `./gradlew :nanogatekeeper:testDebugUnitTest :nanogatekeeper-litert:testDebugUnitTest :nanogatekeeper-ort:testDebugUnitTest :app:testDebugUnitTest --stacktrace`
 - Smoke test (unit tests + AAR assembly + archive checks):
   `bash scripts/smoke-test.sh`
-- Full AARs + demo APK:
-  `./gradlew :nanogatekeeper:assembleRelease :nanogatekeeper-litert:assembleRelease :app:assembleDebug --stacktrace`
+- Full AARs + demo APK (needs NDK 27 + CMake 3.22.1 for `:nanogatekeeper-ort`):
+  `./gradlew :nanogatekeeper:assembleRelease :nanogatekeeper-litert:assembleRelease :nanogatekeeper-ort:assembleRelease :app:assembleDebug --stacktrace`

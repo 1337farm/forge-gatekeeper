@@ -14,8 +14,11 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.forgerig.nanogatekeeper.engine.AICoreInferenceClient
 import com.forgerig.nanogatekeeper.engine.NanoGatekeeperEngine
+import com.forgerig.nanogatekeeper.engine.NanoInferenceClient
 import com.forgerig.nanogatekeeper.litert.MediaPipeLlmClient
 import com.forgerig.nanogatekeeper.litert.ModelStore
+import com.forgerig.nanogatekeeper.ort.OrtGenAiClient
+import com.forgerig.nanogatekeeper.ort.OrtModelDir
 import com.forgerig.nanogatekeeper.model.GatekeeperConfig
 import com.forgerig.nanogatekeeper.model.GatekeeperResult
 import kotlinx.coroutines.launch
@@ -25,7 +28,7 @@ class DemoActivity : AppCompatActivity() {
 
     private lateinit var nanoEngine: NanoGatekeeperEngine
     private var localEngine: NanoGatekeeperEngine? = null
-    private var localClient: MediaPipeLlmClient? = null
+    private var localClient: AutoCloseable? = null
     private var localModelPath: String? = null
 
     // One-line device capability snapshot so NOT_AVAILABLE-class fallbacks are
@@ -58,6 +61,10 @@ class DemoActivity : AppCompatActivity() {
         val outputView = findViewById<TextView>(R.id.outputView)
         val telemetryView = findViewById<TextView>(R.id.telemetryView)
         val localSwitch = findViewById<Switch>(R.id.localModelSwitch)
+        val ortDemoButton = findViewById<Button>(R.id.ortDemoButton)
+        ortDemoButton.setOnClickListener {
+            startActivity(android.content.Intent(this, MainActivity::class.java))
+        }
         val modelUrl = findViewById<EditText>(R.id.modelUrl)
         val hfToken = findViewById<EditText>(R.id.hfToken)
         val downloadButton = findViewById<Button>(R.id.downloadButton)
@@ -146,11 +153,12 @@ class DemoActivity : AppCompatActivity() {
                     if (useLocal) {
                         val picked = pickLocalModel()
                         if (picked == null) {
-                            statusView.text = "No usable .task model — download one above first."
+                            statusView.text = "No local model — download a .task above or push " +
+                                "a GenAI folder into files/ort-models/."
                             return@launch
                         }
                         engine = localEngineFor(picked)
-                        mode = "[local Gemma] "
+                        mode = if (picked.isDirectory) "[ORT native] " else "[local Gemma] "
                     } else {
                         engine = nanoEngine
                         mode = "[live NPU] "
@@ -204,6 +212,13 @@ class DemoActivity : AppCompatActivity() {
     }
 
     private fun pickLocalModel(): File? {
+        // Bare-metal ORT GenAI folders win over .task files when both exist.
+        val ortRoot = File(filesDir, "ort-models")
+        val ort = ortRoot.listFiles()
+            ?.filter { it.isDirectory && OrtModelDir.missingEntries(it).isEmpty() }
+            ?.sortedBy { it.name }
+            ?.firstOrNull()
+        if (ort != null) return ort
         val models = ModelStore.listModels(ModelStore.modelsDir(filesDir))
         return models.firstOrNull { ModelStore.isUsable(it) }
     }
@@ -211,9 +226,12 @@ class DemoActivity : AppCompatActivity() {
     private fun refreshModelStatus(modelStatus: TextView) {
         val picked = pickLocalModel()
         modelStatus.text = if (picked == null) {
-            "Local model: none. Download a .task above (or adb push one into files/models/)."
+            "Local model: none. Download a .task above, or adb push a GenAI " +
+                "model folder into files/ort-models/."
+        } else if (picked.isDirectory) {
+            "Local model: ${picked.name}/ (ORT GenAI native)"
         } else {
-            "Local model: ${picked.name} (${picked.length() / 1_048_576} MB)"
+            "Local model: ${picked.name} (${picked.length() / 1_048_576} MB, MediaPipe)"
         }
     }
 
@@ -221,9 +239,13 @@ class DemoActivity : AppCompatActivity() {
         val cached = localEngine
         if (cached != null && localModelPath == model.absolutePath) return cached
         closeLocalEngine()
-        val client = MediaPipeLlmClient(applicationContext, model)
+        val client: NanoInferenceClient = if (model.isDirectory) {
+            OrtGenAiClient(applicationContext, model)
+        } else {
+            MediaPipeLlmClient(applicationContext, model)
+        }
         val engine = NanoGatekeeperEngine(applicationContext, client)
-        localClient = client
+        localClient = client as AutoCloseable
         localEngine = engine
         localModelPath = model.absolutePath
         return engine

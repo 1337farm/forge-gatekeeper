@@ -44,7 +44,7 @@ jobs:
             gradle-${{ runner.os }}-
 
       - name: Run library unit tests
-        run: ./gradlew :nanogatekeeper:testDebugUnitTest :nanogatekeeper-litert:testDebugUnitTest :app:testDebugUnitTest --stacktrace
+        run: ./gradlew :nanogatekeeper:testDebugUnitTest :nanogatekeeper-litert:testDebugUnitTest :nanogatekeeper-ort:testDebugUnitTest :app:testDebugUnitTest --stacktrace
 
   package-aar:
     name: aar
@@ -66,7 +66,26 @@ jobs:
         uses: 1337farm/actions/setup-android-env@v1
 
       - name: Grant execute permission
-        run: chmod +x gradlew scripts/smoke-test.sh
+        run: chmod +x gradlew scripts/smoke-test.sh scripts/fetch-ort-android.sh
+
+      # NDK + CMake for the :nanogatekeeper-ort native build (shared action;
+      # NDK dir cached — multi-GB download on a cold cache otherwise).
+      - name: Cache Android NDK
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/lib/android/sdk/ndk
+          key: android-ndk-27.0.12077973
+
+      - name: Setup Android NDK
+        uses: 1337farm/actions/setup-android-ndk@v1
+        with:
+          ndk-version: "27.0.12077973"
+
+      - name: Install CMake 3.22.1
+        run: |
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "cmake;3.22.1"
 
       # Same Gradle cache as the test job: dependency + wrapper reuse across
       # runs, keyed on build scripts (matches forgerig's setup-java behavior).
@@ -102,6 +121,14 @@ jobs:
           path: nanogatekeeper-litert/build/outputs/aar/nanogatekeeper-litert-release.aar
           retention-days: 30
 
+      - name: Upload ORT native backend AAR artifact
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: NanoGatekeeper-ORT-AAR
+          path: nanogatekeeper-ort/build/outputs/aar/nanogatekeeper-ort-release.aar
+          retention-days: 30
+
       - name: Upload demo APK artifact
         uses: actions/upload-artifact@v6
         if: always()
@@ -132,14 +159,19 @@ jobs:
           [ -n "$LITERT_AAR" ] || { echo "ERROR: no nanogatekeeper-litert-release.aar to publish"; exit 1; }
           LITERT_NAME="nanogatekeeper-litert-$SHA.aar"
           cp "$LITERT_AAR" "$OUT/$LITERT_NAME"
+          ORT_AAR="$(find nanogatekeeper-ort/build/outputs/aar -name 'nanogatekeeper-ort-release.aar' | head -1)"
+          [ -n "$ORT_AAR" ] || { echo "ERROR: no nanogatekeeper-ort-release.aar to publish"; exit 1; }
+          ORT_NAME="nanogatekeeper-ort-$SHA.aar"
+          cp "$ORT_AAR" "$OUT/$ORT_NAME"
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           SUM_AAR="$(sha256sum "$OUT/$AAR_NAME" | cut -d' ' -f1)"
           SUM_APK="$(sha256sum "$OUT/$APK_NAME" | cut -d' ' -f1)"
           SUM_LITERT="$(sha256sum "$OUT/$LITERT_NAME" | cut -d' ' -f1)"
-          printf '{"commit":"%s","built_at":"%s","files":{"%s":"%s","%s":"%s","%s":"%s"}}\n' \
-            "$SHA" "$DATE" "$AAR_NAME" "$SUM_AAR" "$APK_NAME" "$SUM_APK" "$LITERT_NAME" "$SUM_LITERT" > "$OUT/aar-manifest.json"
+          SUM_ORT="$(sha256sum "$OUT/$ORT_NAME" | cut -d' ' -f1)"
+          printf '{"commit":"%s","built_at":"%s","files":{"%s":"%s","%s":"%s","%s":"%s","%s":"%s"}}\n' \
+            "$SHA" "$DATE" "$AAR_NAME" "$SUM_AAR" "$APK_NAME" "$SUM_APK" "$LITERT_NAME" "$SUM_LITERT" "$ORT_NAME" "$SUM_ORT" > "$OUT/aar-manifest.json"
           gh release delete latest --yes --cleanup-tag --repo "${{ github.repository }}" 2>/dev/null || true
-          gh release create latest "$OUT/$AAR_NAME" "$OUT/$APK_NAME" "$OUT/$LITERT_NAME" "$OUT/aar-manifest.json" --repo "${{ github.repository }}" \
+          gh release create latest "$OUT/$AAR_NAME" "$OUT/$APK_NAME" "$OUT/$LITERT_NAME" "$OUT/$ORT_NAME" "$OUT/aar-manifest.json" --repo "${{ github.repository }}" \
             --title "NanoGatekeeper AAR (latest)" \
             --notes "Rolling release AARs + demo APK built from source. Re-published on every green build."
 
