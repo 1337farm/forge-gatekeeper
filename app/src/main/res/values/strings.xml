@@ -3,4 +3,7 @@
     <string name="app_name">Gatekeeper Demo</string>
     <string name="hint_input">Type a prompt to test…</string>
     <string name="run">Run gatekeeper</string>
+    <string name="copy_result">Copy result</string>
+    <string name="copied">Copied.</string>
+    <string name="nothing_to_copy">Nothing to copy yet.</string>
 </resources>

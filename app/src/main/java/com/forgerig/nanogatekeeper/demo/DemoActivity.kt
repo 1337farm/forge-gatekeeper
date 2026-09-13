@@ -1,9 +1,12 @@
 package com.forgerig.nanogatekeeper.demo
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.forgerig.nanogatekeeper.engine.AICoreInferenceClient
@@ -27,9 +30,22 @@ class DemoActivity : AppCompatActivity() {
 
         val input = findViewById<EditText>(R.id.input)
         val runButton = findViewById<Button>(R.id.runButton)
+        val copyButton = findViewById<Button>(R.id.copyButton)
         val statusView = findViewById<TextView>(R.id.statusView)
         val outputView = findViewById<TextView>(R.id.outputView)
         val telemetryView = findViewById<TextView>(R.id.telemetryView)
+
+        // Copies the output, else the status/error line — never the raw input.
+        copyButton.setOnClickListener {
+            val payload = outputView.text.toString().ifBlank { statusView.text.toString() }
+            if (payload.isBlank() || payload == "Idle.") {
+                Toast.makeText(this, getString(R.string.nothing_to_copy), Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("gatekeeper", payload))
+            Toast.makeText(this, getString(R.string.copied), Toast.LENGTH_SHORT).show()
+        }
 
         runButton.setOnClickListener {
             val raw = input.text.toString()

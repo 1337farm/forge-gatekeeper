@@ -132,11 +132,14 @@ class NanoGatekeeperEngine(
             throw e
         } catch (t: Throwable) {
             breaker.recordFailure()
-            rec(GatekeeperStep.STAGE_A_SECURITY_EVAL, StepStatus.FAILED, "parse/exec")
+            // Surface the truncated cause: a bare "stage_a error" is undebuggable
+            // on-device (allowlist, missing model, service errors all land here).
+            val cause = "stage_a error: ${t.message}".take(300)
+            rec(GatekeeperStep.STAGE_A_SECURITY_EVAL, StepStatus.FAILED, cause)
             rec(GatekeeperStep.FALLBACK_TO_SANITIZED, StepStatus.EXECUTED, "stage_a error")
             return GatekeeperResult.FallbackRequired(
-                sanitized, "stage_a error",
-                ledger(preTokens, fallback = "stage_a error")
+                sanitized, cause,
+                ledger(preTokens, fallback = cause)
             )
         }
         breaker.recordSuccess()
@@ -252,11 +255,12 @@ class NanoGatekeeperEngine(
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
-                rec(GatekeeperStep.STAGE_D_ACCURACY_AUDIT, StepStatus.FAILED, "audit parse")
+                val cause = "audit error: ${t.message}".take(300)
+                rec(GatekeeperStep.STAGE_D_ACCURACY_AUDIT, StepStatus.FAILED, cause)
                 rec(GatekeeperStep.FALLBACK_TO_SANITIZED, StepStatus.EXECUTED, "audit error")
                 return GatekeeperResult.FallbackRequired(
-                    sanitized, "audit error",
-                    ledger(preTokens, fallback = "audit error", compIt = compIt, audIt = audIt)
+                    sanitized, cause,
+                    ledger(preTokens, fallback = cause, compIt = compIt, audIt = audIt)
                 )
             }
 
