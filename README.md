@@ -40,6 +40,10 @@ No local SDK needed — cloud runners build the APK.
      experimental access (join the `aicore-experimental` group and opt into
      the AICore beta in the Play Store); without it the engine reports the
      exact service error and falls back instead of crashing.
+     `NOT_AVAILABLE: Required LLM feature not found` specifically means the
+     on-device Gemini Nano model is not provisioned on that device yet —
+     check the requirements above, then retry once the model finishes
+     downloading.
 
 ## Consumer (ForgeRig)
 

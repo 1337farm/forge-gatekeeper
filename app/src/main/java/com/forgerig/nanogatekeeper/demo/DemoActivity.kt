@@ -35,10 +35,17 @@ class DemoActivity : AppCompatActivity() {
         val outputView = findViewById<TextView>(R.id.outputView)
         val telemetryView = findViewById<TextView>(R.id.telemetryView)
 
-        // Copies the output, else the status/error line — never the raw input.
+        // Copies the full on-screen report (status + output + telemetry) so
+        // fallback/error diagnoses survive — never the raw input.
         copyButton.setOnClickListener {
-            val payload = outputView.text.toString().ifBlank { statusView.text.toString() }
-            if (payload.isBlank() || payload == "Idle.") {
+            val status = statusView.text.toString()
+            val output = outputView.text.toString()
+            val telemetry = telemetryView.text.toString()
+            val payload = listOf(status, output, telemetry)
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && it != "Idle." }
+                .joinToString("\n\n")
+            if (payload.isBlank()) {
                 Toast.makeText(this, getString(R.string.nothing_to_copy), Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }

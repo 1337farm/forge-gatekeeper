@@ -1,10 +1,11 @@
 # .babysitrc values for nanogatekeeper (KEY=VALUE, sourced by babysit-pr.sh
-# from 1337farm/pr-babysitter; install: curl -fsSL
+# from 1337farm/pr-babysitter v1; install: curl -fsSL
 # https://raw.githubusercontent.com/1337farm/pr-babysitter/v1/babysit-pr.sh).
 # CLI flags (--artifact=… etc.) override these.
-# Library publishes an AAR (not APK): artifact + release carry the AAR.
-APK_ARTIFACT="NanoGatekeeper-AAR"
+# Phone-facing artifact is the demo APK (sideload + install on top);
+# the AAR rides the same `latest` release for ForgeRig consumers.
+APK_ARTIFACT="NanoGatekeeper-Demo-APK"
 MAIN_WORKFLOW="android.yml"
 RELEASE_TAG="latest"
-APK_GLOB="nanogatekeeper-*.aar"
-LOG_GLOB="nanogatekeeper-*.log*"
+APK_GLOB="nanogatekeeper-*.apk"
+LOG_GLOB="*.log"
