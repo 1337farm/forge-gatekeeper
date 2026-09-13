@@ -1,5 +1,9 @@
 # ForgeNanoGatekeeper
 
+[![Build](https://github.com/1337farm/nanogatekeeper/actions/workflows/android.yml/badge.svg)](https://github.com/1337farm/nanogatekeeper/actions/workflows/android.yml)
+
+**[Download the latest demo APK + AAR](https://github.com/1337farm/nanogatekeeper/releases/tag/latest)**
+
 Standalone Android library (AAR): zero-cloud-leak, on-device AI firewall,
 semantic token compressor, privacy filter, and accuracy-audited safety
 gatekeeper for ForgeRig. Gemini Nano via AICore, NPU-serialized.
@@ -32,7 +36,10 @@ No local SDK needed — cloud runners build the APK.
      BLOCKED, nothing leaves the device.
    - On phones without AICore (needs Pixel 8 Pro/9+, Android 14+, AICore beta
      opt-in) you will see FALLBACK — the safe sanitized path, which is also a
-     valid test result.
+     valid test result. Live NPU inference additionally requires AICore
+     experimental access (join the `aicore-experimental` group and opt into
+     the AICore beta in the Play Store); without it the engine reports the
+     exact service error and falls back instead of crashing.
 
 ## Consumer (ForgeRig)
 
