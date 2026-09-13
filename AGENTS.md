@@ -16,11 +16,16 @@ A branch cut from an old `main` will be CONFLICTING by the time you push.
      only on your own task branches.
 
 ## After opening a PR: babysit it to green
-Always watch the PR with `bash ~/bin/babysit-pr.sh <PR> [interval] [max_polls]`
+Always watch the PR with `bash ~/bin/babysit-pr.sh <PR> [interval] [max_polls] --apk[=dir]`
 (shared tool: 1337farm/pr-babysitter v1; repo values in `.babysitrc`)
 and hold the turn until it is done: keep polling, and fix every follow-up
 failure the script reports instead of stopping at the first red check
 (exit 1 = a check failed: read the run log, fix, push, re-run the script).
+`--apk` is mandatory: after the merge it waits for main's rebuild on the
+merge commit and downloads the `NanoGatekeeper-Demo-APK` artifact into
+`./apk-out` for device sideload, so every green PR ends with a phone-ready
+APK on disk. Use `--latest-apk` instead only when you want the republished
+`latest`-release APK.
 
 ## Before committing: verify the build
 - Unit tests (no device needed):
