@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Nano gatekeeper: mint shield, amber NPU bolt, on gatekeeper navy. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="@color/gatekeeper_mint"
+        android:pathData="M54,14 L88,27 V54 C88,75 73,89 54,94 C35,89 20,75 20,54 V27 Z" />
+    <path
+        android:fillColor="@color/gatekeeper_navy"
+        android:pathData="M59,32 L39,61 H53 L49,78 L69,51 H55 Z" />
+    <path
+        android:fillColor="@color/gatekeeper_amber"
+        android:pathData="M54,14 L88,27 V33 L54,20 L20,33 V27 Z" />
+</vector>
