@@ -19,6 +19,20 @@ class DemoActivity : AppCompatActivity() {
 
     private lateinit var engine: NanoGatekeeperEngine
 
+    // One-line device capability snapshot so NOT_AVAILABLE-class fallbacks are
+    // self-diagnosing (API level, AICore package, total RAM).
+    private fun capabilityLine(): String {
+        val aicore =
+            if (com.forgerig.nanogatekeeper.hardware.HardwareCapabilityEngine.isAicorePresent(this)) "present"
+            else "missing"
+        val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
+        val mi = android.app.ActivityManager.MemoryInfo()
+        am.getMemoryInfo(mi)
+        val gb = mi.totalMem / 1_000_000_000.0
+        return "Device: API ${android.os.Build.VERSION.SDK_INT} · AICore pkg $aicore · " +
+            "RAM ${String.format("%.1f", gb)}GB"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -35,13 +49,16 @@ class DemoActivity : AppCompatActivity() {
         val outputView = findViewById<TextView>(R.id.outputView)
         val telemetryView = findViewById<TextView>(R.id.telemetryView)
 
-        // Copies the full on-screen report (status + output + telemetry) so
-        // fallback/error diagnoses survive — never the raw input.
+        val caps = capabilityLine()
+        statusView.text = "$caps\nIdle."
+
+        // Copies the full on-screen report (caps + status + output + telemetry)
+        // so fallback/error diagnoses survive — never the raw input.
         copyButton.setOnClickListener {
             val status = statusView.text.toString()
             val output = outputView.text.toString()
             val telemetry = telemetryView.text.toString()
-            val payload = listOf(status, output, telemetry)
+            val payload = listOf(caps, status, output, telemetry)
                 .map { it.trim() }
                 .filter { it.isNotEmpty() && it != "Idle." }
                 .joinToString("\n\n")
