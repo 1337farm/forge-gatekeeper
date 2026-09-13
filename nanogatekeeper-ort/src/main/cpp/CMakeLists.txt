@@ -4,8 +4,16 @@ project(llm_engine)
 
 # Native ORT GenAI + ORT shared libs staged by scripts/fetch-ort-android.sh
 # into nanogatekeeper-ort/src/main/jniLibs/arm64-v8a (same files AGP packages).
-set(ORT_JNILIBS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../jniLibs/arm64-v8a")
+set(ORT_JNILIBS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/arm64-v8a")
 set(ORT_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/include")
+
+foreach(_so libonnxruntime.so libonnxruntime-genai.so)
+  if(NOT EXISTS "${ORT_JNILIBS_DIR}/${_so}")
+    message(FATAL_ERROR
+      "Missing ${_so} in ${ORT_JNILIBS_DIR}. "
+      "Run scripts/fetch-ort-android.sh first (wired as a Gradle dependency of CMake tasks).")
+  endif()
+endforeach()
 
 add_library(onnxruntime SHARED IMPORTED)
 set_target_properties(onnxruntime PROPERTIES
