@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "com.forgerig.nanogatekeeper.demo"
-        minSdk = 26
+        minSdk = 31 // AICore SDK floor (Google requirement); library itself stays 26
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
