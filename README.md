@@ -25,7 +25,8 @@ on-device: XNNPACK EP when present with automatic CPU fallback, QNN NPU
 wiring present but commented until the QNN EP + Hexagon libs are staged.
 Telemetry is disabled in native code (`OgaSetTelemetryEnabled(false)`).
 
-Model folder layout (adb-push or download once, then offline):
+Model folder layout (download in-app with no credentials, or adb-push
+once, then offline):
 
 ```
 files/ort-models/<model>/genai_config.json
@@ -33,8 +34,14 @@ files/ort-models/<model>/genai_config.json
                         tokenizer.json / tokenizer_config.json
 ```
 
-Known-good sources (verify the folder carries `genai_config.json`):
-Microsoft `*-onnx` repos (Phi pattern:
+**No Hugging Face token required.** In the demo's Download row, paste
+`owner/repo[:subfolder]` and it pulls the whole GenAI folder from the
+public file listing (`microsoft/Phi-3-mini-4k-instruct-onnx`
+/`cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4` is prefilled: MIT,
+public, INT4, ≈2.5 GB — no account, no API key). The token field is
+strictly optional and only matters for gated repos, which the demo
+deliberately does not depend on. Known-good sources (verify the folder
+carries `genai_config.json`): Microsoft `*-onnx` repos (Phi pattern:
 `<model>/cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4/`) and
 `onnxruntime/*-ONNX` repos. Target envelope: 3B INT4 ≈ 2GB weights —
 comfortable in 12GB RAM. The demo's ORT screen auto-detects valid folders
@@ -72,16 +79,26 @@ No local SDK needed — cloud runners build the APK.
      check the requirements above, then retry once the model finishes
      downloading.
 
-### No Pixel? Run a local Gemma instead
+### No Pixel? Run a local LLM instead
 
 Gemini Nano is Pixel-only, but the gatekeeper accepts any
-`NanoInferenceClient`. The demo ships a MediaPipe backend: flip
-**Local Gemma model**, paste a `.task` URL (default: Gemma 3n E2B int4,
-~3.1GB), add your Hugging Face token if the repo is gated (accept Gemma's
-license first), and Download. The file lands in the app's private storage;
-inference from then on is fully offline — the network is used only for that
-one download. You can also `adb push your-model.task` into the app's
-`files/models/` directory and it will be picked up automatically.
+`NanoInferenceClient`. The demo ships two on-device backends that need no
+cloud account:
+
+- **Bare-metal ORT (recommended):** flip **Local Gemma model** (i.e. the
+  local-model switch), leave the Download row as prefilled
+  (`microsoft/Phi-3-mini-4k-instruct-onnx:...cpu-int4...`, MIT, public,
+  ≈2.5GB) and tap **Download**. No token, no gated-repo license gate. The
+  whole GenAI folder lands in `files/ort-models/` and is picked up
+  automatically.
+- **MediaPipe `.task`:** paste any public `.task` URL; the token field is
+  strictly optional and only needed for gated repos (e.g. the default Gemma
+  3n E2B int4 requires accepting Gemma's license first — the download will
+  fail cleanly without a token).
+
+From then on inference is fully offline — the network is used only for that
+one download. You can also `adb push` a GenAI folder to `files/ort-models/`
+or a `.task` to `files/models/` and they will be picked up automatically.
 
 ## Consumer (ForgeRig)
 
