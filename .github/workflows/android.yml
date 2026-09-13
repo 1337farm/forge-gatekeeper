@@ -30,6 +30,19 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      # Gradle dependency + wrapper cache (same paths/keys as
+      # actions/setup-java `cache: gradle` in forgerig; our shared setup-jdk
+      # installs the JDK only, so cache explicitly with actions/cache@v4).
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
       - name: Run library unit tests
         run: ./gradlew :nanogatekeeper:testDebugUnitTest :app:testDebugUnitTest --stacktrace
 
@@ -54,6 +67,18 @@ jobs:
 
       - name: Grant execute permission
         run: chmod +x gradlew scripts/smoke-test.sh
+
+      # Same Gradle cache as the test job: dependency + wrapper reuse across
+      # runs, keyed on build scripts (matches forgerig's setup-java behavior).
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
       - name: Smoke test (unit + AAR + archive checks)
         run: bash scripts/smoke-test.sh
