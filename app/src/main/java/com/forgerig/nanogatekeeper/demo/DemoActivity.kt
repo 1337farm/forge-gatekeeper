@@ -112,7 +112,8 @@ class DemoActivity : AppCompatActivity() {
                     refreshModelStatus(modelStatus)
                     Toast.makeText(this@DemoActivity, "Model ready.", Toast.LENGTH_SHORT).show()
                 } catch (t: Throwable) {
-                    modelStatus.text = "Download failed: ${t.message}"
+                    modelStatus.text = "Download failed: ${t.message} " +
+                            "— tap Download again to resume from where it stopped."
                 } finally {
                     downloadButton.isEnabled = true
                     downloadProgress.visibility = View.GONE
