@@ -5,3 +5,4 @@ nanogatekeeper/build/
 .gradle/
 *.iml
 .DS_Store
+/apk-out/

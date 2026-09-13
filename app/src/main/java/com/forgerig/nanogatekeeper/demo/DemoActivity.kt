@@ -3,21 +3,30 @@ package com.forgerig.nanogatekeeper.demo
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.os.Bundle
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ProgressBar
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.forgerig.nanogatekeeper.engine.AICoreInferenceClient
 import com.forgerig.nanogatekeeper.engine.NanoGatekeeperEngine
+import com.forgerig.nanogatekeeper.litert.MediaPipeLlmClient
+import com.forgerig.nanogatekeeper.litert.ModelStore
 import com.forgerig.nanogatekeeper.model.GatekeeperConfig
 import com.forgerig.nanogatekeeper.model.GatekeeperResult
 import kotlinx.coroutines.launch
+import java.io.File
 
 class DemoActivity : AppCompatActivity() {
 
-    private lateinit var engine: NanoGatekeeperEngine
+    private lateinit var nanoEngine: NanoGatekeeperEngine
+    private var localEngine: NanoGatekeeperEngine? = null
+    private var localClient: MediaPipeLlmClient? = null
+    private var localModelPath: String? = null
 
     // One-line device capability snapshot so NOT_AVAILABLE-class fallbacks are
     // self-diagnosing (API level, AICore package, total RAM).
@@ -37,7 +46,7 @@ class DemoActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        engine = NanoGatekeeperEngine(
+        nanoEngine = NanoGatekeeperEngine(
             applicationContext,
             AICoreInferenceClient(applicationContext)
         )
@@ -48,6 +57,54 @@ class DemoActivity : AppCompatActivity() {
         val statusView = findViewById<TextView>(R.id.statusView)
         val outputView = findViewById<TextView>(R.id.outputView)
         val telemetryView = findViewById<TextView>(R.id.telemetryView)
+        val localSwitch = findViewById<Switch>(R.id.localModelSwitch)
+        val modelUrl = findViewById<EditText>(R.id.modelUrl)
+        val hfToken = findViewById<EditText>(R.id.hfToken)
+        val downloadButton = findViewById<Button>(R.id.downloadButton)
+        val downloadProgress = findViewById<ProgressBar>(R.id.downloadProgress)
+        val modelStatus = findViewById<TextView>(R.id.modelStatus)
+
+        modelUrl.setText(ModelDownloader.DEFAULT_MODEL_URL)
+        refreshModelStatus(modelStatus)
+
+        downloadButton.setOnClickListener {
+            val url = modelUrl.text.toString().trim()
+            if (url.isBlank()) {
+                modelStatus.text = "Enter a model .task URL first."
+                return@setOnClickListener
+            }
+            val fileName = url.substringAfterLast('/').substringBefore('?')
+                .takeIf { it.endsWith(".task", ignoreCase = true) }
+                ?: ModelDownloader.DEFAULT_MODEL_FILE
+            val dest = ModelStore.defaultModelFile(filesDir, fileName)
+            downloadButton.isEnabled = false
+            downloadProgress.visibility = View.VISIBLE
+            downloadProgress.progress = 0
+            modelStatus.text = "Downloading $fileName…"
+            lifecycleScope.launch {
+                try {
+                    ModelDownloader.download(url, hfToken.text.toString(), dest) { done, total ->
+                        runOnUiThread {
+                            if (total > 0) {
+                                downloadProgress.progress = ((done * 100) / total).toInt()
+                                modelStatus.text = "Downloading: ${done / 1_048_576} / ${total / 1_048_576} MB"
+                            } else {
+                                modelStatus.text = "Downloading: ${done / 1_048_576} MB"
+                            }
+                        }
+                    }
+                    // Fresh file: drop any cached client bound to the old one.
+                    closeLocalEngine()
+                    refreshModelStatus(modelStatus)
+                    Toast.makeText(this@DemoActivity, "Model ready.", Toast.LENGTH_SHORT).show()
+                } catch (t: Throwable) {
+                    modelStatus.text = "Download failed: ${t.message}"
+                } finally {
+                    downloadButton.isEnabled = true
+                    downloadProgress.visibility = View.GONE
+                }
+            }
+        }
 
         val caps = capabilityLine()
         statusView.text = "$caps\nIdle."
@@ -83,7 +140,23 @@ class DemoActivity : AppCompatActivity() {
             telemetryView.text = ""
             lifecycleScope.launch {
                 try {
-                    render(engine.processPrompt(raw, GatekeeperConfig()), statusView, outputView, telemetryView)
+                    val useLocal = localSwitch.isChecked
+                    val mode: String
+                    val engine: NanoGatekeeperEngine
+                    if (useLocal) {
+                        val picked = pickLocalModel()
+                        if (picked == null) {
+                            statusView.text = "No usable .task model — download one above first."
+                            return@launch
+                        }
+                        engine = localEngineFor(picked)
+                        mode = "[local Gemma] "
+                    } else {
+                        engine = nanoEngine
+                        mode = "[live NPU] "
+                    }
+                    val result = engine.processPrompt(raw, GatekeeperConfig())
+                    render(result, statusView, outputView, telemetryView, mode)
                 } catch (t: Throwable) {
                     statusView.text = "Error: ${t.message}"
                 } finally {
@@ -97,12 +170,13 @@ class DemoActivity : AppCompatActivity() {
         result: GatekeeperResult,
         statusView: TextView,
         outputView: TextView,
-        telemetryView: TextView
+        telemetryView: TextView,
+        mode: String
     ) {
         when (result) {
             is GatekeeperResult.Success -> {
                 val t = result.telemetry
-                statusView.text = "SUCCESS (heat=${result.heat})"
+                statusView.text = mode + "SUCCESS (heat=${result.heat})"
                 outputView.text = result.safeCompressedPrompt
                 telemetryView.text = "tokens ${t.preCompressionTokens} → ${t.postCompressionTokens} " +
                     "(${String.format("%.1f", t.compressionRatioPct)}% saved) · " +
@@ -110,17 +184,55 @@ class DemoActivity : AppCompatActivity() {
                     "redactions=${t.redactionEvents}"
             }
             is GatekeeperResult.Blocked -> {
-                statusView.text = "BLOCKED (heat=${result.heat}): ${result.reason}"
+                statusView.text = mode + "BLOCKED (heat=${result.heat}): ${result.reason}"
                 outputView.text = "(nothing sent anywhere)"
                 telemetryView.text = "redactions=${result.telemetry.redactionEvents}"
             }
             is GatekeeperResult.FallbackRequired -> {
                 val t = result.telemetry
-                statusView.text = "FALLBACK: ${result.reason}"
+                statusView.text = mode + "FALLBACK: ${result.reason}"
                 outputView.text = result.sanitizedPrompt
                 telemetryView.text = "maxRetriesExhausted=${t.maxRetriesExhausted} · " +
                     "redactions=${t.redactionEvents}"
             }
         }
+    }
+
+    override fun onDestroy() {
+        closeLocalEngine()
+        super.onDestroy()
+    }
+
+    private fun pickLocalModel(): File? {
+        val models = ModelStore.listModels(ModelStore.modelsDir(filesDir))
+        return models.firstOrNull { ModelStore.isUsable(it) }
+    }
+
+    private fun refreshModelStatus(modelStatus: TextView) {
+        val picked = pickLocalModel()
+        modelStatus.text = if (picked == null) {
+            "Local model: none. Download a .task above (or adb push one into files/models/)."
+        } else {
+            "Local model: ${picked.name} (${picked.length() / 1_048_576} MB)"
+        }
+    }
+
+    private fun localEngineFor(model: File): NanoGatekeeperEngine {
+        val cached = localEngine
+        if (cached != null && localModelPath == model.absolutePath) return cached
+        closeLocalEngine()
+        val client = MediaPipeLlmClient(applicationContext, model)
+        val engine = NanoGatekeeperEngine(applicationContext, client)
+        localClient = client
+        localEngine = engine
+        localModelPath = model.absolutePath
+        return engine
+    }
+
+    private fun closeLocalEngine() {
+        localClient?.let { runCatching { it.close() } }
+        localClient = null
+        localEngine = null
+        localModelPath = null
     }
 }

@@ -44,7 +44,7 @@ jobs:
             gradle-${{ runner.os }}-
 
       - name: Run library unit tests
-        run: ./gradlew :nanogatekeeper:testDebugUnitTest :app:testDebugUnitTest --stacktrace
+        run: ./gradlew :nanogatekeeper:testDebugUnitTest :nanogatekeeper-litert:testDebugUnitTest :app:testDebugUnitTest --stacktrace
 
   package-aar:
     name: aar
@@ -94,6 +94,14 @@ jobs:
           path: nanogatekeeper/build/outputs/aar/nanogatekeeper-release.aar
           retention-days: 30
 
+      - name: Upload LiteRT backend AAR artifact
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: NanoGatekeeper-LiteRT-AAR
+          path: nanogatekeeper-litert/build/outputs/aar/nanogatekeeper-litert-release.aar
+          retention-days: 30
+
       - name: Upload demo APK artifact
         uses: actions/upload-artifact@v6
         if: always()
@@ -120,15 +128,20 @@ jobs:
           [ -n "$APK" ] || { echo "ERROR: no app-debug.apk to publish"; exit 1; }
           APK_NAME="nanogatekeeper-demo-$SHA.apk"
           cp "$APK" "$OUT/$APK_NAME"
+          LITERT_AAR="$(find nanogatekeeper-litert/build/outputs/aar -name 'nanogatekeeper-litert-release.aar' | head -1)"
+          [ -n "$LITERT_AAR" ] || { echo "ERROR: no nanogatekeeper-litert-release.aar to publish"; exit 1; }
+          LITERT_NAME="nanogatekeeper-litert-$SHA.aar"
+          cp "$LITERT_AAR" "$OUT/$LITERT_NAME"
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           SUM_AAR="$(sha256sum "$OUT/$AAR_NAME" | cut -d' ' -f1)"
           SUM_APK="$(sha256sum "$OUT/$APK_NAME" | cut -d' ' -f1)"
-          printf '{"commit":"%s","built_at":"%s","files":{"%s":"%s","%s":"%s"}}\n' \
-            "$SHA" "$DATE" "$AAR_NAME" "$SUM_AAR" "$APK_NAME" "$SUM_APK" > "$OUT/aar-manifest.json"
+          SUM_LITERT="$(sha256sum "$OUT/$LITERT_NAME" | cut -d' ' -f1)"
+          printf '{"commit":"%s","built_at":"%s","files":{"%s":"%s","%s":"%s","%s":"%s"}}\n' \
+            "$SHA" "$DATE" "$AAR_NAME" "$SUM_AAR" "$APK_NAME" "$SUM_APK" "$LITERT_NAME" "$SUM_LITERT" > "$OUT/aar-manifest.json"
           gh release delete latest --yes --cleanup-tag --repo "${{ github.repository }}" 2>/dev/null || true
-          gh release create latest "$OUT/$AAR_NAME" "$OUT/$APK_NAME" "$OUT/aar-manifest.json" --repo "${{ github.repository }}" \
+          gh release create latest "$OUT/$AAR_NAME" "$OUT/$APK_NAME" "$OUT/$LITERT_NAME" "$OUT/aar-manifest.json" --repo "${{ github.repository }}" \
             --title "NanoGatekeeper AAR (latest)" \
-            --notes "Rolling release AAR + demo APK built from source. Re-published on every green build."
+            --notes "Rolling release AARs + demo APK built from source. Re-published on every green build."
 
   automerge:
     name: Auto-merge PR

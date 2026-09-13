@@ -11,6 +11,7 @@ gatekeeper for ForgeRig. Gemini Nano via AICore, NPU-serialized.
 ## Modules
 
 - `:nanogatekeeper` — the library (`com.forgerig.nanogatekeeper`)
+- `:nanogatekeeper-litert` — optional local-LLM backend (`MediaPipeLlmClient`)
 - `:app` — demo app (`com.forgerig.nanogatekeeper.demo`)
 
 ## Verify
@@ -44,6 +45,17 @@ No local SDK needed — cloud runners build the APK.
      on-device Gemini Nano model is not provisioned on that device yet —
      check the requirements above, then retry once the model finishes
      downloading.
+
+### No Pixel? Run a local Gemma instead
+
+Gemini Nano is Pixel-only, but the gatekeeper accepts any
+`NanoInferenceClient`. The demo ships a MediaPipe backend: flip
+**Local Gemma model**, paste a `.task` URL (default: Gemma 3n E2B int4,
+~3.1GB), add your Hugging Face token if the repo is gated (accept Gemma's
+license first), and Download. The file lands in the app's private storage;
+inference from then on is fully offline — the network is used only for that
+one download. You can also `adb push your-model.task` into the app's
+`files/models/` directory and it will be picked up automatically.
 
 ## Consumer (ForgeRig)
 
