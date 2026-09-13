@@ -29,10 +29,6 @@ class AICoreInferenceClient(appContext: Context) : NanoInferenceClient {
             ?: throw IllegalStateException("AICore returned an empty response")
     }
 
-    fun prepare() {
-        model.prepareInferenceEngine()
-    }
-
     fun close() {
         runCatching { model.close() }
     }
