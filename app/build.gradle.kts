@@ -13,13 +13,6 @@ android {
         applicationId = "com.forgerig.gatekeeper.demo"
         minSdk = 31
         targetSdk = 35
-        // FROZEN across releases: Android requires every split APK to carry the
-        // exact versionCode of the base. A frozen code lets the native-runtime
-        // split from an older release pair with any newer base, so updates
-        // re-download only the ~30MB base and reuse the cached runtime split.
-        // Picked to sit far above any historical GITHUB_RUN_NUMBER (early RUN
-        // builds shipped monotonic codes ~1..20) so upgrading from those stays
-        // a valid update; equal-code reinstalls are always permitted.
         versionCode = 5_000_000
         // Human-readable: the committing SHA beats a constant for debugging.
         versionName = System.getenv("GITHUB_SHA")?.take(10) ?: "1.0"
@@ -28,24 +21,6 @@ android {
             // armeabi-v7a ABIs MediaPipe tasks-genai ships kills ~82MB of
             // dead weight from the uploaded APK.
             abiFilters += setOf("arm64-v8a")
-        }
-    }
-
-    bundle {
-        // Only two artifacts: base-master.apk (code+resources) and the frozen
-        // split_config.arm64_v8a.apk (natives). No per-language/density splits.
-        abi { enableSplit = true }
-        density { enableSplit = false }
-        language { enableSplit = false }
-    }
-
-    packaging {
-        jniLibs {
-            // Compress native libs inside the APK (extract at install): the
-            // on-disk/downloaded APK shrinks ~55% while behavior is identical.
-            // Worth it for a sideloaded demo; swap to false for store-style
-            // playback/aligned builds where install speed matters more.
-            useLegacyPackaging = true
         }
     }
 

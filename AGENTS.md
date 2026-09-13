@@ -34,7 +34,35 @@ APK on disk. Use `--latest-apk` instead only when you want the republished
   `bash scripts/smoke-test.sh`
 - Full AARs + demo APK (needs NDK 27 + CMake 3.22.1 for `:gatekeeper-ort`):
   `./gradlew :gatekeeper:assembleRelease :gatekeeper-litert:assembleRelease :gatekeeper-ort:assembleRelease :app:assembleDebug --stacktrace`
-- Split delivery (base + frozen arm64 runtime split, CI publishes these):
-  `bash scripts/build-splits.sh` (builds `:app:bundleRelease`, runs bundletool
-  1.18.3 with the committed demo keystore, emits `apk-out/gatekeeper-base-*`
-  + `gatekeeper-runtime-arm64-*` + `gatekeeper-splits-*.apks`).
+- Demo APK only (no split delivery):
+  `./gradlew :app:assembleDebug --stacktrace`
+
+## Dynamic Feature Modules (DFM)
+The demo ships the ORT native backend as a separate DFM downloaded from
+GitHub at runtime (see README). The DFM ZIP (`gatekeeper-ort-dfm.zip`)
+is published as an asset on the rolling `latest` release alongside the
+AARs and the monolith APK. To rebuild the DFM locally:
+1. `./gradlew :gatekeeper-ort:assembleRelease`
+2. Unzip `gatekeeper-ort/build/outputs/aar/gatekeeper-ort-release.aar`
+3. Zip `classes.jar` + `jni/` as `gatekeeper-ort-dfm.zip`
+4. Upload to the `latest` release.
+
+## Hard rule: every change goes through a PR
+- **Never push directly to `main`** (it is protected). Every change,
+  no matter how small, must land as a PR: branch → commit → push →
+  open PR → babysit to green → automerge. A direct push is a policy
+  violation and will be rejected.
+- Even a one-line fix gets its own PR and its own babysit run so the
+  `latest` release rebuilds with the new APK on disk.
+- Reuse the same workflow: `git fetch origin && git checkout main &&
+  git reset --hard origin/main && git checkout -b <type>/<short-name>`,
+  commit, push, `gh pr create`, then `bash
+  /data/data/com.termux/files/home/bin/babysit-pr.sh <PR> --apk`.
+
+## Environment notes
+- `gh` and `git` need `export PATH="/data/data/com.termux/files/usr/bin:$PATH"`.
+- `git` needs `export HOME=/data/data/com.termux/files/home` (no HOME =
+  push prompts for a username even though `gh auth` is configured).
+- `gh` needs `export TMPDIR=/data/data/com.termux/files/home/.cache/gh-tmp`.
+- `bash ~/bin/babysit-pr.sh` does not work in this shell; use the
+  absolute path `/data/data/com.termux/files/home/bin/babysit-pr.sh`.
