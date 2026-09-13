@@ -60,7 +60,7 @@ bt build-apks --bundle="$AAB" --output="$WORK/app.apks" --mode=default \
 
 echo "==> extract base + arm64 config split"
 cat > "$WORK/device-spec.json" <<'EOF'
-{ "supported_abis": ["arm64-v8a"], "sdk_version": 35 }
+{ "supported_abis": ["arm64-v8a"], "sdk_version": 35, "screen_density": 420 }
 EOF
 bt extract-apks --apks="$WORK/app.apks" --device-spec="$WORK/device-spec.json" \
   --output-dir="$WORK/extract"
