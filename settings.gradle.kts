@@ -15,4 +15,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "ForgeNanoGatekeeper"
 include(":nanogatekeeper")
+include(":nanogatekeeper-litert")
 include(":app")
