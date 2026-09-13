@@ -12,7 +12,33 @@ gatekeeper for ForgeRig. Gemini Nano via AICore, NPU-serialized.
 
 - `:nanogatekeeper` — the library (`com.forgerig.nanogatekeeper`)
 - `:nanogatekeeper-litert` — optional local-LLM backend (`MediaPipeLlmClient`)
+- `:nanogatekeeper-ort` — optional bare-metal backend (ONNX Runtime GenAI
+  C++ via `OrtGenAiClient`; no MediaPipe/llama.cpp)
 - `:app` — demo app (`com.forgerig.nanogatekeeper.demo`)
+
+### Bare-metal ORT backend (Snapdragon 8 Elite target)
+
+`:nanogatekeeper-ort` links `libonnxruntime.so` + `libonnxruntime-genai.so`
+(staged per-build by `scripts/fetch-ort-android.sh` from the pinned
+GenAI v0.15.2 Android AAR + ORT Android AAR) and runs INT4 LLMs fully
+on-device: XNNPACK EP when present with automatic CPU fallback, QNN NPU
+wiring present but commented until the QNN EP + Hexagon libs are staged.
+Telemetry is disabled in native code (`OgaSetTelemetryEnabled(false)`).
+
+Model folder layout (adb-push or download once, then offline):
+
+```
+files/ort-models/<model>/genai_config.json
+                        model.onnx (+ data shards)
+                        tokenizer.json / tokenizer_config.json
+```
+
+Known-good sources (verify the folder carries `genai_config.json`):
+Microsoft `*-onnx` repos (Phi pattern:
+`<model>/cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4/`) and
+`onnxruntime/*-ONNX` repos. Target envelope: 3B INT4 ≈ 2GB weights —
+comfortable in 12GB RAM. The demo's ORT screen auto-detects valid folders
+under `files/ort-models/`.
 
 ## Verify
 
