@@ -52,8 +52,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
-    // Gemini Nano on-device via AICore / AI Edge SDK.
-    implementation("com.google.ai.edge.aicore:aicore:1.0.0-alpha04")
+    // Gemini Nano on-device via AICore / AI Edge SDK (Google Maven).
+    implementation("com.google.ai.edge.aicore:aicore:0.0.1-exp02")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
