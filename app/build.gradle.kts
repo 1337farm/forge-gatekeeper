@@ -16,6 +16,22 @@ android {
         // Monotonic per CI run so store builds always install as updates.
         versionCode = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1)
         versionName = "1.0"
+        ndk {
+            // Demo runs on arm64-v8a phones only. Pruning the x86/x86_64/
+            // armeabi-v7a ABIs MediaPipe tasks-genai ships kills ~82MB of
+            // dead weight from the uploaded APK.
+            abiFilters += setOf("arm64-v8a")
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // Compress native libs inside the APK (extract at install): the
+            // on-disk/downloaded APK shrinks ~55% while behavior is identical.
+            // Worth it for a sideloaded demo; swap to false for store-style
+            // playback/aligned builds where install speed matters more.
+            useLegacyPackaging = true
+        }
     }
 
     testOptions {
