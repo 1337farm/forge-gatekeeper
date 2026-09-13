@@ -29,7 +29,7 @@ object DeterministicScrubber {
         text = replaceNonDestructive(text, AWS_KEY, "[API_KEY_REDACTED]", "aws_key", events)
         text = replaceNonDestructive(text, GCP_KEY, "[API_KEY_REDACTED]", "gcp_key", events)
         text = replaceNonDestructive(text, CC, "[CARD_REDACTED]", "card", events, ::luhnLike)
-        text = replaceNonDestructive(text, GENERIC_SECRET, "\$1=[SECRET_REDACTED]", "secret", events)
+        text = replaceNonDestructive(text, GENERIC_SECRET, "\$1=[SECRET_REDACTED]", "secret", events, template = true)
         text = scrubHighEntropy(text, events)
         return ScrubResult(text, events)
     }
@@ -40,7 +40,8 @@ object DeterministicScrubber {
         replacement: String,
         type: String,
         events: MutableList<ScrubEvent>,
-        accept: ((String) -> Boolean)? = null
+        accept: ((String) -> Boolean)? = null,
+        template: Boolean = false
     ): String {
         val m: Matcher = pattern.matcher(input)
         val sb = StringBuffer(input.length + 32)
@@ -49,7 +50,9 @@ object DeterministicScrubber {
             val hit = m.group()
             if (accept != null && !accept(hit)) continue
             events.add(ScrubEvent(type, replacement))
-            m.appendReplacement(sb, Matcher.quoteReplacement(replacement))
+            // Template replacements carry $1 group refs and must NOT be quoted;
+            // literal replacements are quoted to neutralize $ and \ in matches.
+            m.appendReplacement(sb, if (template) replacement else Matcher.quoteReplacement(replacement))
             changed = true
         }
         m.appendTail(sb)
