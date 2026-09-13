@@ -1,9 +1,12 @@
 /build
 /.gradle
+/.cache
 /local.properties
-nanogatekeeper/build/
+gatekeeper/build/
+gatekeeper-litert/build/
+gatekeeper-ort/build/
 # Staged ORT GenAI natives (scripts/fetch-ort-android.sh, CI-generated)
-nanogatekeeper-ort/src/main/jniLibs/
+gatekeeper-ort/src/main/jniLibs/
 .gradle/
 *.iml
 .DS_Store
