@@ -71,36 +71,43 @@ class DemoActivity : AppCompatActivity() {
         val downloadProgress = findViewById<ProgressBar>(R.id.downloadProgress)
         val modelStatus = findViewById<TextView>(R.id.modelStatus)
 
-        modelUrl.setText(ModelDownloader.DEFAULT_MODEL_URL)
+        modelUrl.setText(ModelDownloader.DEFAULT_ORT_REF)
         refreshModelStatus(modelStatus)
 
         downloadButton.setOnClickListener {
-            val url = modelUrl.text.toString().trim()
-            if (url.isBlank()) {
-                modelStatus.text = "Enter a model .task URL first."
+            val spec = modelUrl.text.toString().trim()
+            if (spec.isBlank()) {
+                modelStatus.text = "Enter a .task URL or an owner/repo[:subfolder] model first."
                 return@setOnClickListener
             }
-            val fileName = url.substringAfterLast('/').substringBefore('?')
-                .takeIf { it.endsWith(".task", ignoreCase = true) }
-                ?: ModelDownloader.DEFAULT_MODEL_FILE
-            val dest = ModelStore.defaultModelFile(filesDir, fileName)
             downloadButton.isEnabled = false
             downloadProgress.visibility = View.VISIBLE
             downloadProgress.progress = 0
-            modelStatus.text = "Downloading $fileName…"
+            modelStatus.text = "Resolving $spec…"
             lifecycleScope.launch {
                 try {
-                    ModelDownloader.download(url, hfToken.text.toString(), dest) { done, total ->
-                        runOnUiThread {
-                            if (total > 0) {
-                                downloadProgress.progress = ((done * 100) / total).toInt()
-                                modelStatus.text = "Downloading: ${done / 1_048_576} / ${total / 1_048_576} MB"
-                            } else {
-                                modelStatus.text = "Downloading: ${done / 1_048_576} MB"
-                            }
+                    val token = hfToken.text.toString() // optional; blank = public repos only
+                    if (spec.contains("://")) {
+                        val fileName = spec.substringAfterLast('/').substringBefore('?')
+                            .takeIf { it.endsWith(".task", ignoreCase = true) }
+                            ?: ModelDownloader.DEFAULT_MODEL_FILE
+                        val dest = ModelStore.defaultModelFile(filesDir, fileName)
+                        modelStatus.text = "Downloading $fileName…"
+                        ModelDownloader.download(spec, token, dest) { done, total ->
+                            runOnUiThread { report(done, total, modelStatus, downloadProgress) }
+                        }
+                    } else {
+                        val ref = ModelDownloader.parseRepoRef(spec)
+                        val dir = File(
+                            File(filesDir, "ort-models"),
+                            ref.repo.substringAfterLast('/').take(40)
+                        )
+                        modelStatus.text = "Downloading ${ref.repo}${ref.subfolder?.let { "/$it" } ?: ""}…"
+                        ModelDownloader.downloadOrtFolder(ref, dir) { done, total ->
+                            runOnUiThread { report(done, total, modelStatus, downloadProgress) }
                         }
                     }
-                    // Fresh file: drop any cached client bound to the old one.
+                    // Fresh files: drop any cached client bound to the old ones.
                     closeLocalEngine()
                     refreshModelStatus(modelStatus)
                     Toast.makeText(this@DemoActivity, "Model ready.", Toast.LENGTH_SHORT).show()
@@ -153,8 +160,8 @@ class DemoActivity : AppCompatActivity() {
                     if (useLocal) {
                         val picked = pickLocalModel()
                         if (picked == null) {
-                            statusView.text = "No local model — download a .task above or push " +
-                                "a GenAI folder into files/ort-models/."
+                            statusView.text = "No local model — hit Download above " +
+                                "(defaults to a tokenless public ORT model) or adb push a folder."
                             return@launch
                         }
                         engine = localEngineFor(picked)
@@ -211,6 +218,21 @@ class DemoActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
+    // Shares one progress renderer between .task and ORT-folder downloads.
+    private fun report(
+        done: Long,
+        total: Long,
+        modelStatus: TextView,
+        downloadProgress: ProgressBar
+    ) {
+        if (total > 0) {
+            downloadProgress.progress = ((done * 100) / total).toInt()
+            modelStatus.text = "Downloading: ${done / 1_048_576} / ${total / 1_048_576} MB"
+        } else {
+            modelStatus.text = "Downloading: ${done / 1_048_576} MB"
+        }
+    }
+
     private fun pickLocalModel(): File? {
         // Bare-metal ORT GenAI folders win over .task files when both exist.
         val ortRoot = File(filesDir, "ort-models")
@@ -226,8 +248,8 @@ class DemoActivity : AppCompatActivity() {
     private fun refreshModelStatus(modelStatus: TextView) {
         val picked = pickLocalModel()
         modelStatus.text = if (picked == null) {
-            "Local model: none. Download a .task above, or adb push a GenAI " +
-                "model folder into files/ort-models/."
+            "Local model: none. Tap Download (no token needed) or adb push a " +
+                "GenAI folder into files/ort-models/."
         } else if (picked.isDirectory) {
             "Local model: ${picked.name}/ (ORT GenAI native)"
         } else {

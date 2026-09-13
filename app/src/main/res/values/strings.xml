@@ -3,9 +3,9 @@
     <string name="app_name">Gatekeeper Demo</string>
     <string name="hint_input">Type a prompt to test…</string>
     <string name="run">Run gatekeeper</string>
-    <string name="local_gemma">Local Gemma model (.task on this phone)</string>
-    <string name="hint_model_url">Model .task URL</string>
-    <string name="hint_hf_token">Hugging Face token (for gated Gemma downloads)</string>
+    <string name="local_gemma">Local model (ORT GenAI folder or .task on this phone)</string>
+    <string name="hint_model_url">Model .task URL or a Hugging Face owner/repo[:subfolder]</string>
+    <string name="hint_hf_token">HF token (optional — leave blank; only gated repos need one)</string>
     <string name="download_model">Download model</string>
     <string name="open_ort_demo">Open ORT native demo</string>
     <string name="copy_result">Copy result</string>
