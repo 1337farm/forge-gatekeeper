@@ -2,6 +2,7 @@ package com.forgerig.nanogatekeeper.demo
 
 import com.forgerig.nanogatekeeper.demo.ModelDownloader.RepoRef
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
@@ -53,5 +54,18 @@ class ModelDownloaderTest {
             "cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4",
             ref.subfolder
         )
+    }
+
+    @Test
+    fun `content range parses start and total`() {
+        assertEquals(0L to 2722861056L, ModelDownloader.parseContentRange("bytes 0-127/2722861056"))
+        assertEquals(2048L to 4096L, ModelDownloader.parseContentRange("bytes 2048-4095/4096"))
+    }
+
+    @Test
+    fun `malformed or missing content range yields null`() {
+        assertNull(ModelDownloader.parseContentRange(null))
+        assertNull(ModelDownloader.parseContentRange("garbage"))
+        assertNull(ModelDownloader.parseContentRange("bytes abc-def/123"))
     }
 }
