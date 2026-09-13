@@ -6,22 +6,37 @@ plugins {
 }
 
 android {
-    namespace = "com.forgerig.nanogatekeeper.demo"
+    namespace = "com.forgerig.gatekeeper.demo"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.forgerig.nanogatekeeper.demo"
-        minSdk = 31 // AICore SDK floor (Google requirement); library itself stays 26
+        applicationId = "com.forgerig.gatekeeper.demo"
+        minSdk = 31
         targetSdk = 35
-        // Monotonic per CI run so store builds always install as updates.
-        versionCode = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1)
-        versionName = "1.0"
+        // FROZEN across releases: Android requires every split APK to carry the
+        // exact versionCode of the base. A frozen code lets the native-runtime
+        // split from an older release pair with any newer base, so updates
+        // re-download only the ~30MB base and reuse the cached runtime split.
+        // Picked to sit far above any historical GITHUB_RUN_NUMBER (early RUN
+        // builds shipped monotonic codes ~1..20) so upgrading from those stays
+        // a valid update; equal-code reinstalls are always permitted.
+        versionCode = 5_000_000
+        // Human-readable: the committing SHA beats a constant for debugging.
+        versionName = System.getenv("GITHUB_SHA")?.take(10) ?: "1.0"
         ndk {
             // Demo runs on arm64-v8a phones only. Pruning the x86/x86_64/
             // armeabi-v7a ABIs MediaPipe tasks-genai ships kills ~82MB of
             // dead weight from the uploaded APK.
             abiFilters += setOf("arm64-v8a")
         }
+    }
+
+    bundle {
+        // Only two artifacts: base-master.apk (code+resources) and the frozen
+        // split_config.arm64_v8a.apk (natives). No per-language/density splits.
+        abi { enableSplit = true }
+        density { enableSplit = false }
+        language { enableSplit = false }
     }
 
     packaging {
@@ -39,17 +54,17 @@ android {
     }
 
     signingConfigs {
-        // Stable demo certificate (keystore/nanogatekeeper-demo.keystore, a
+        // Stable demo certificate (keystore/gatekeeper-demo.keystore, a
         // committed demo-only key) so every CI build installs as an update.
         // Falls back to the ephemeral debug key when the file is absent
         // (fresh clones before the keystore lands, forks).
-        val demoKs = rootProject.file("keystore/nanogatekeeper-demo.keystore")
+        val demoKs = rootProject.file("keystore/gatekeeper-demo.keystore")
         create("demo") {
             if (demoKs.exists()) {
                 storeFile = demoKs
-                storePassword = System.getenv("DEMO_KEYSTORE_PASSWORD") ?: "nanogatekeeper"
+                storePassword = System.getenv("DEMO_KEYSTORE_PASSWORD") ?: "gatekeeper"
                 keyAlias = "demo"
-                keyPassword = System.getenv("DEMO_KEY_PASSWORD") ?: "nanogatekeeper"
+                keyPassword = System.getenv("DEMO_KEY_PASSWORD") ?: "gatekeeper"
             }
         }
     }
@@ -66,7 +81,7 @@ android {
             isMinifyEnabled = false
         }
     }
-    if (rootProject.file("keystore/nanogatekeeper-demo.keystore").exists()) {
+    if (rootProject.file("keystore/gatekeeper-demo.keystore").exists()) {
         buildTypes {
             getByName("debug") { signingConfig = signingConfigs.getByName("demo") }
             getByName("release") { signingConfig = signingConfigs.getByName("demo") }
@@ -85,9 +100,9 @@ android {
 }
 
 dependencies {
-    implementation(project(":nanogatekeeper"))
-    implementation(project(":nanogatekeeper-litert"))
-    implementation(project(":nanogatekeeper-ort"))
+    implementation(project(":gatekeeper"))
+    implementation(project(":gatekeeper-litert"))
+    implementation(project(":gatekeeper-ort"))
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")

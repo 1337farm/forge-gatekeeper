@@ -7,7 +7,7 @@
 # externalNativeBuild; the same .so files are what AGP packages into the APK.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="$ROOT/nanogatekeeper-ort/src/main/jniLibs/arm64-v8a"
+OUT="$ROOT/gatekeeper-ort/src/main/jniLibs/arm64-v8a"
 MARKER="$OUT/.ort-version"
 
 GENAI_VER="0.15.2"

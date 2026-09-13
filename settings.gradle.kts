@@ -13,8 +13,8 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ForgeNanoGatekeeper"
-include(":nanogatekeeper")
-include(":nanogatekeeper-litert")
-include(":nanogatekeeper-ort")
+rootProject.name = "ForgeGatekeeper"
+include(":gatekeeper")
+include(":gatekeeper-litert")
+include(":gatekeeper-ort")
 include(":app")

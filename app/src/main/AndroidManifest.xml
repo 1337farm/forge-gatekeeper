@@ -1,16 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Model download only (demo app fetches the .task once). Inference
-         itself is fully offline; the library never touches the network. -->
+    <!-- Model download only (demo app fetches the .task/folder once).
+         Inference itself is fully offline; the library never touches the
+         network. -->
     <uses-permission android:name="android.permission.INTERNET" />
-
-    <!-- Package visibility for the AICore presence check
-         (HardwareCapabilityEngine.getPackageInfo). Without this, Android 11+
-         always reports "package missing" and the engine falls back. -->
-    <queries>
-        <package android:name="com.google.android.aicore" />
-    </queries>
 
     <application
         android:allowBackup="false"

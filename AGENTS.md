@@ -1,4 +1,4 @@
-# AGENTS.md — nanogatekeeper contributor workflow
+# AGENTS.md — gatekeeper contributor workflow
 
 ## Before starting ANY task: sync with latest `main`
 PR branches go stale fast (automerge squashes into `main` constantly).
@@ -22,15 +22,19 @@ and hold the turn until it is done: keep polling, and fix every follow-up
 failure the script reports instead of stopping at the first red check
 (exit 1 = a check failed: read the run log, fix, push, re-run the script).
 `--apk` is mandatory: after the merge it waits for main's rebuild on the
-merge commit and downloads the `NanoGatekeeper-Demo-APK` artifact into
+merge commit and downloads the `ForgeGatekeeper-Demo-APK` artifact into
 `./apk-out` for device sideload, so every green PR ends with a phone-ready
 APK on disk. Use `--latest-apk` instead only when you want the republished
 `latest`-release APK.
 
 ## Before committing: verify the build
 - Unit tests (no device needed):
-  `./gradlew :nanogatekeeper:testDebugUnitTest :nanogatekeeper-litert:testDebugUnitTest :nanogatekeeper-ort:testDebugUnitTest :app:testDebugUnitTest --stacktrace`
+  `./gradlew :gatekeeper:testDebugUnitTest :gatekeeper-litert:testDebugUnitTest :gatekeeper-ort:testDebugUnitTest :app:testDebugUnitTest --stacktrace`
 - Smoke test (unit tests + AAR assembly + archive checks):
   `bash scripts/smoke-test.sh`
-- Full AARs + demo APK (needs NDK 27 + CMake 3.22.1 for `:nanogatekeeper-ort`):
-  `./gradlew :nanogatekeeper:assembleRelease :nanogatekeeper-litert:assembleRelease :nanogatekeeper-ort:assembleRelease :app:assembleDebug --stacktrace`
+- Full AARs + demo APK (needs NDK 27 + CMake 3.22.1 for `:gatekeeper-ort`):
+  `./gradlew :gatekeeper:assembleRelease :gatekeeper-litert:assembleRelease :gatekeeper-ort:assembleRelease :app:assembleDebug --stacktrace`
+- Split delivery (base + frozen arm64 runtime split, CI publishes these):
+  `bash scripts/build-splits.sh` (builds `:app:bundleRelease`, runs bundletool
+  1.18.3 with the committed demo keystore, emits `apk-out/gatekeeper-base-*`
+  + `gatekeeper-runtime-arm64-*` + `gatekeeper-splits-*.apks`).
