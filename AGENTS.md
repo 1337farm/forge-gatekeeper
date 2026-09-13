@@ -24,8 +24,8 @@ failure the script reports instead of stopping at the first red check
 
 ## Before committing: verify the build
 - Unit tests (no device needed):
-  `./gradlew :nanogatekeeper:testDebugUnitTest --stacktrace`
+  `./gradlew :nanogatekeeper:testDebugUnitTest :app:testDebugUnitTest --stacktrace`
 - Smoke test (unit tests + AAR assembly + archive checks):
   `bash scripts/smoke-test.sh`
-- Full AAR:
-  `./gradlew :nanogatekeeper:assembleRelease --stacktrace`
+- Full AAR + demo APK:
+  `./gradlew :nanogatekeeper:assembleRelease :app:assembleDebug --stacktrace`
