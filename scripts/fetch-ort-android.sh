@@ -30,13 +30,22 @@ echo "==> downloading ORT Android AAR v${ORT_VER}"
 curl -fsSL -o "$TMP/ort.aar" "$ORT_URL"
 
 echo "==> extracting arm64-v8a shared libs"
-rm -f "$OUT"/libonnxruntime*.so
+rm -f "$OUT"/libonnxruntime*.so "$OUT"/libmat.so
 unzip -o -j "$TMP/genai.aar" 'jni/arm64-v8a/libonnxruntime-genai.so' -d "$OUT"
 unzip -o -j "$TMP/ort.aar" 'jni/arm64-v8a/libonnxruntime.so' -d "$OUT"
+# libonnxruntime-genai.so DT_NEEDEDs in-AAR libmat.so; without the sibling
+# the runtime explodes at dlopen (`library "libmat.so" not found`). Pull it
+# from whichever upstream AAR carries it (GenAI first, plain ORT fallback).
+run() { "$@" >/dev/null 2>&1; }
+if ! run unzip -o -j "$TMP/genai.aar" 'jni/arm64-v8a/libmat.so' -d "$OUT" &&
+   ! run unzip -o -j "$TMP/ort.aar" 'jni/arm64-v8a/libmat.so' -d "$OUT"; then
+  echo "ERROR: libmat.so missing from both upstream AARs" >&2
+  exit 1
+fi
 
-# Structural gate: both libs present and non-trivial (a poison/truncated
+# Structural gate: all three libs present and non-trivial (a poison/truncated
 # download must never reach the APK).
-for so in libonnxruntime.so libonnxruntime-genai.so; do
+for so in libonnxruntime.so libonnxruntime-genai.so libmat.so; do
   SZ="$(stat -c%s "$OUT/$so" 2>/dev/null || echo 0)"
   if [ "$SZ" -lt 1000000 ]; then
     echo "ERROR: $so missing or suspiciously small ($SZ bytes)" >&2

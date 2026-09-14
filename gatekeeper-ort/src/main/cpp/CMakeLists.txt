@@ -2,12 +2,17 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(llm_engine)
 
-# Native ORT GenAI + ORT shared libs staged by scripts/fetch-ort-android.sh
-# into gatekeeper-ort/src/main/jniLibs/arm64-v8a (same files AGP packages).
+# Native ORT GenAI + ORT shared libs fetched from upstream (Maven Central /
+# GitHub release AARs) by scripts/fetch-ort-android.sh, or taken from the
+# release's local build cache so the device pipeline survives air-gapped CI.
 set(ORT_JNILIBS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/arm64-v8a")
 set(ORT_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/include")
 
-foreach(_so libonnxruntime.so libonnxruntime-genai.so)
+# The GenAI AAR's libonnxruntime-genai.so DT_NEEDEDs its in-AAR sibling
+# libmat.so; without that file AGP would still happily package an APK whose
+# dlopen graph collapses at runtime. Enforce + search: fetch script first,
+# then the release AARs, then any Gradle module cache copy.
+foreach(_so libonnxruntime.so libonnxruntime-genai.so libmat.so)
   if(NOT EXISTS "${ORT_JNILIBS_DIR}/${_so}")
     message(FATAL_ERROR
       "Missing ${_so} in ${ORT_JNILIBS_DIR}. "

@@ -10,6 +10,15 @@ package com.forgerig.gatekeeper.ort
 object LlmBridge {
 
     init {
+        // Order matters: libonnxruntime-genai.so DT_NEEDEDs libonnxruntime.so
+        // (plus libmat.so inside AARs), so the plain runtime must be pulled
+        // into the linker namespace FIRST — otherwise dlopen of the GenAI
+        // lib explodes with `dlopen failed: library "libmat.so" not found`
+        // style cascades. Keep this static init even if unused so that
+        // loading LlmBridge always preloads the graph (idempotent, burnt
+        // once per process).
+        runCatching { System.loadLibrary("onnxruntime") }
+        runCatching { System.loadLibrary("onnxruntime-genai") }
         System.loadLibrary("llm_engine")
     }
 
