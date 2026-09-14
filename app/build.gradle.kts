@@ -27,7 +27,7 @@ android {
         }
         // Single-language resources: drops non-English translations bundled
         // by AndroidX/MediaPipe, shrinking the monolith APK further.
-        resConfigs += setOf("en")
+        resourceConfigurations += "en"
     }
 
     testOptions {
@@ -94,7 +94,7 @@ android {
 dependencies {
     implementation(project(":gatekeeper"))
     implementation(project(":gatekeeper-litert"))
-    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.activity:activity:1.9.3")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
