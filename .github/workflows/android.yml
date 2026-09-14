@@ -55,8 +55,8 @@ jobs:
       - name: Cache Android NDK
         uses: actions/cache@v4
         with:
-          path: /usr/local/lib/android/sdk/ndk
-          key: android-ndk-27.0.12077973
+          path: /usr/local/lib/android/sdk/ndk/27.0.12077973
+          key: android-ndk-27.0.12077973-v2
       - name: Setup Android NDK
         uses: 1337farm/actions/setup-android-ndk@v1
         with:
