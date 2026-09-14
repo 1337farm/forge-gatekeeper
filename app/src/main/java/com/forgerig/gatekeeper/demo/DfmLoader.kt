@@ -36,7 +36,7 @@ class DfmLoader(private val context: Context) {
         return withContext(Dispatchers.IO) {
             try {
                 val chunks = try {
-                    fetchChunkManifest().opt(backend)
+                    fetchChunkManifest().chunkList(backend)
                 } catch (e: Exception) {
                     Log.w(tag, "Chunk manifest lookup failed; falling back to monolith asset", e)
                     null
@@ -53,7 +53,7 @@ class DfmLoader(private val context: Context) {
         }
     }
 
-    private fun ensureChunks(
+    private suspend fun ensureChunks(
         backend: String,
         chunks: List<DfmChunk>,
         onProgress: (Long, Long) -> Unit
@@ -92,7 +92,7 @@ class DfmLoader(private val context: Context) {
         }
     }
 
-    private fun legacyMonolith(
+    private suspend fun legacyMonolith(
         backend: String,
         onProgress: (Long, Long) -> Unit
     ): Boolean {
@@ -179,7 +179,7 @@ class DfmLoader(private val context: Context) {
         return JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
     }
 
-    private fun JSONObject.opt(backend: String): List<DfmChunk>? {
+    private fun JSONObject.chunkList(backend: String): List<DfmChunk>? {
         val arr = optJSONArray(backend) ?: return null
         return List(arr.length()) { i ->
             val o = arr.getJSONObject(i)
