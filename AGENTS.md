@@ -38,7 +38,7 @@ APK on disk. Use `--latest-apk` instead only when you want the republished
   `./gradlew :app:assembleDebug --stacktrace`
 
 ## Dynamic Feature Modules (DFM)
-The demo base APK ships the core engine plus the bundled MediaPipe backend.
+The demo APK ships the core engine plus the bundled MediaPipe backend.
 The ORT native backend is a separate DFM downloaded from
 GitHub at runtime (see README). The DFM ZIP (`gatekeeper-ort-dfm.zip`)
 is published as an asset on the rolling `latest` release alongside the

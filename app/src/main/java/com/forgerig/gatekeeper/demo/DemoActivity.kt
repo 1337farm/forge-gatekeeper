@@ -10,7 +10,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.Switch
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import com.forgerig.gatekeeper.engine.GatekeeperEngine
 import com.forgerig.gatekeeper.engine.InferenceClient
@@ -20,7 +20,7 @@ import com.forgerig.gatekeeper.model.GatekeeperResult
 import kotlinx.coroutines.launch
 import java.io.File
 
-class DemoActivity : AppCompatActivity() {
+class DemoActivity : ComponentActivity() {
 
     private var localEngine: GatekeeperEngine? = null
     private var localClient: AutoCloseable? = null
