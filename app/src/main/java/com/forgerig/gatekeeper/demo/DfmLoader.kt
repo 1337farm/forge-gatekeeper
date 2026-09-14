@@ -21,6 +21,9 @@ private data class DfmChunk(val name: String, val sha256: String)
 
 class DfmLoader(private val context: Context) {
 
+    var lastError: String? = null
+        private set
+
     private val dfmDir: File = File(context.filesDir, "dfms")
     private val tag = "DfmLoader"
     private val nativeLoadOrder = listOf(
@@ -47,6 +50,7 @@ class DfmLoader(private val context: Context) {
                     ensureChunks(backend, chunks, onProgress)
                 }
             } catch (e: Exception) {
+                lastError = rootCause(e)
                 Log.e(tag, "Failed to ensure DFM $backend", e)
                 false
             }
@@ -70,15 +74,7 @@ class DfmLoader(private val context: Context) {
         dir.mkdirs()
         val ok = try {
             chunks.forEach { chunk ->
-                val zipFile = File(context.cacheDir, chunk.name)
-                val url = "https://github.com/1337farm/forge-gatekeeper/releases/latest/download/${chunk.name}"
-                Log.i(tag, "Downloading chunk ${chunk.name}")
-                ModelDownloader.download(url, null, zipFile, onProgress)
-                if (sha256(zipFile) != chunk.sha256.lowercase()) {
-                    throw IOException("Chunk ${chunk.name} failed integrity check")
-                }
-                extractZip(zipFile, dir)
-                runCatching { zipFile.delete() }
+                downloadChunk(dir, chunk, onProgress)
             }
             if (!classesJar.exists()) {
                 throw IOException("DFM $backend chunks did not contain classes.jar")
@@ -88,10 +84,50 @@ class DfmLoader(private val context: Context) {
             true
         } catch (e: Exception) {
             runCatching { dir.deleteRecursively() }
+            lastError = rootCause(e)
             Log.e(tag, "DFM $backend chunks failed", e)
             false
         }
         return ok
+    }
+
+    private suspend fun downloadChunk(
+        dir: File,
+        chunk: DfmChunk,
+        onProgress: (Long, Long) -> Unit
+    ) {
+        val zipFile = File(context.cacheDir, chunk.name)
+        val partFile = File(context.cacheDir, "${chunk.name}.part")
+        val url = "https://github.com/1337farm/forge-gatekeeper/releases/latest/download/${chunk.name}"
+        var attempt = 0
+        while (true) {
+            try {
+                Log.i(tag, "Downloading chunk ${chunk.name} (attempt ${attempt + 1})")
+                ModelDownloader.download(url, null, zipFile, onProgress)
+                if (sha256(zipFile) != chunk.sha256.lowercase()) {
+                    throw IOException("Chunk ${chunk.name} failed integrity check")
+                }
+                extractZip(zipFile, dir)
+                runCatching { zipFile.delete() }
+                return
+            } catch (e: Exception) {
+                attempt++
+                if (attempt >= 3) throw e
+                runCatching { zipFile.delete() }
+                runCatching { partFile.delete() }
+            }
+        }
+    }
+
+    private fun rootCause(e: Throwable): String {
+        var t: Throwable? = e
+        var depth = 0
+        while (t?.cause != null && t.cause !== t && depth < 8) {
+            t = t.cause
+            depth++
+        }
+        val message = t?.message?.takeIf { it.isNotBlank() } ?: t?.javaClass?.simpleName.orEmpty()
+        return "${t?.javaClass?.simpleName}: $message".take(300)
     }
 
     private suspend fun legacyMonolith(

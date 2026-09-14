@@ -49,7 +49,7 @@ class DownloadService : Service() {
                 runDownload("$KIND_DFM:$backend", "Downloading $backend backend") { notify ->
                     val loader = DfmLoader(this)
                     val ok = loader.ensureDfm(backend, notify)
-                    if (!ok) throw IllegalStateException("$backend backend download failed")
+                    if (!ok) throw IllegalStateException("$backend backend download failed (${loader.lastError ?: "unknown error"})")
                     loader.loadNativeLibs(backend)
                     "$backend backend ready"
                 }
