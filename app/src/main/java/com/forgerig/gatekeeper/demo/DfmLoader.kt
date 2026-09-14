@@ -68,8 +68,8 @@ class DfmLoader(private val context: Context) {
         makeWritable(dir)
         dir.deleteRecursively()
         dir.mkdirs()
-        try {
-            for (chunk in chunks) {
+        val ok = try {
+            chunks.forEach { chunk ->
                 val zipFile = File(context.cacheDir, chunk.name)
                 val url = "https://github.com/1337farm/forge-gatekeeper/releases/latest/download/${chunk.name}"
                 Log.i(tag, "Downloading chunk ${chunk.name}")
@@ -91,6 +91,7 @@ class DfmLoader(private val context: Context) {
             Log.e(tag, "DFM $backend chunks failed", e)
             false
         }
+        return ok
     }
 
     private suspend fun legacyMonolith(
