@@ -95,8 +95,8 @@ Instead of a split APK pair, the demo ships optional backends lazily:
 
 To ship a new ORT DFM, upload `gatekeeper-ort-dfm.zip` (build it from the
 `:gatekeeper-ort` output AAR by unzipping and bundling `classes.jar` + `jni/`)
-as an additional asset on the `latest` release; the demo's "Open ORT native demo"
-will auto-pull it the next time.
+as an additional asset on the `latest` release; the demo's Download ORT backend
+(DFM) action will auto-pull it the next time.
 
 The frozen `versionCode = 5_000_000` is retained so the monolith APK remains
 upgrade-stable (equal-code reinstalls/installs are always permitted; a fresh

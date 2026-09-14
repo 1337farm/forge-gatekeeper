@@ -14,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.forgerig.gatekeeper.engine.GatekeeperEngine
 import com.forgerig.gatekeeper.engine.InferenceClient
+import com.forgerig.gatekeeper.litert.MediaPipeLlmClient
 import com.forgerig.gatekeeper.model.GatekeeperConfig
 import com.forgerig.gatekeeper.model.GatekeeperResult
 import kotlinx.coroutines.launch
@@ -24,7 +25,6 @@ class DemoActivity : AppCompatActivity() {
     private var localEngine: GatekeeperEngine? = null
     private var localClient: AutoCloseable? = null
     private var ortDfmReady = false
-    private var litertDfmReady = false
 
     private fun capabilityLine(): String {
         val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
@@ -151,17 +151,22 @@ class DemoActivity : AppCompatActivity() {
                     val mode = if (model.isDirectory) "[ORT native] " else "[MediaPipe] "
                     val bypass = bypassSwitch.isChecked
                     val dfmLoader = DfmLoader(this@DemoActivity)
-                    val client = getClient(model, dfmLoader, bypass)
+                    closeLocalEngine()
+                    val client = getClient(model, dfmLoader)
 
                     if (bypass) {
-                        val rawResult = client.generate("", raw)
-                        outputView.text = rawResult
-                        statusView.text = "$mode RAW (gatekeeper bypassed)"
-                        telemetryView.text = "Gatekeeper pipeline bypassed — no sanitization, redaction, compression, or audit."
+                        try {
+                            val rawResult = client.generate("", raw)
+                            outputView.text = rawResult
+                            statusView.text = "$mode RAW (gatekeeper bypassed)"
+                            telemetryView.text = "Gatekeeper pipeline bypassed — no sanitization, redaction, compression, or audit."
+                        } finally {
+                            (client as? AutoCloseable)?.let { runCatching { it.close() } }
+                        }
                     } else {
                         val engine = GatekeeperEngine(applicationContext, client)
                         localEngine = engine
-                        localClient = client as AutoCloseable
+                        localClient = client as? AutoCloseable
                         val result = engine.processPrompt(raw, GatekeeperConfig())
                         render(result, statusView, outputView, telemetryView, mode)
                     }
@@ -174,7 +179,7 @@ class DemoActivity : AppCompatActivity() {
         }
     }
 
-    private suspend fun getClient(model: File, dfmLoader: DfmLoader, bypass: Boolean): InferenceClient {
+    private suspend fun getClient(model: File, dfmLoader: DfmLoader): InferenceClient {
         if (model.isDirectory) {
             if (!ortDfmReady) {
                 ortDfmReady = dfmLoader.ensureDfm("ort")
@@ -182,11 +187,7 @@ class DemoActivity : AppCompatActivity() {
             }
             return dfmLoader.getInferenceClient("ort", model)
         } else {
-            if (!litertDfmReady) {
-                litertDfmReady = dfmLoader.ensureDfm("litert")
-                dfmLoader.loadNativeLibs("litert")
-            }
-            return dfmLoader.getInferenceClient("litert", model)
+            return MediaPipeLlmClient(applicationContext, model)
         }
     }
 

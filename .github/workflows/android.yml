@@ -70,6 +70,77 @@ jobs:
         run: bash scripts/smoke-test.sh
       - name: Assemble demo APK
         run: ./gradlew :app:assembleDebug --stacktrace
+      - name: Upload demo APK artifact
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: ForgeGatekeeper-Demo-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+      - name: Build ORT DFM ZIP
+        run: |
+          set -euo pipefail
+          ORT_AAR="$(find gatekeeper-ort/build/outputs/aar -name 'gatekeeper-ort-release.aar' | head -1)"
+          [ -n "$ORT_AAR" ] || { echo "ERROR: no gatekeeper-ort-release.aar for DFM"; exit 1; }
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          unzip -q "$ORT_AAR" 'classes.jar' 'jni/arm64-v8a/*.so' -d "$TMP"
+          [ -f "$TMP/classes.jar" ] || { echo "ERROR: classes.jar missing for DFM"; exit 1; }
+          [ -n "$(find "$TMP/jni/arm64-v8a" -maxdepth 1 -name '*.so' -print -quit)" ] || {
+            echo "ERROR: no arm64-v8a natives for DFM"; exit 1; }
+          rm -f gatekeeper-ort-dfm.zip
+          ROOT="$PWD"
+          (cd "$TMP" && zip -qr "$ROOT/gatekeeper-ort-dfm.zip" classes.jar jni)
+          ls -lh gatekeeper-ort-dfm.zip
+          unzip -l gatekeeper-ort-dfm.zip
+      - name: Upload ORT DFM artifact
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: ForgeGatekeeper-ORT-DFM
+          path: gatekeeper-ort-dfm.zip
+          retention-days: 30
+      - name: Publish rolling latest release
+        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/gatekeeper-release"
+          mkdir -p "$OUT"
+          AAR="$(find gatekeeper/build/outputs/aar -name 'gatekeeper-release.aar' | head -1)"
+          LITERT_AAR="$(find gatekeeper-litert/build/outputs/aar -name 'gatekeeper-litert-release.aar' | head -1)"
+          ORT_AAR="$(find gatekeeper-ort/build/outputs/aar -name 'gatekeeper-ort-release.aar' | head -1)"
+          APK="$(find app/build/outputs/apk/debug -name 'app-debug.apk' | head -1)"
+          [ -n "$AAR" ] || { echo "ERROR: no gatekeeper-release.aar to publish"; exit 1; }
+          [ -n "$LITERT_AAR" ] || { echo "ERROR: no gatekeeper-litert-release.aar to publish"; exit 1; }
+          [ -n "$ORT_AAR" ] || { echo "ERROR: no gatekeeper-ort-release.aar to publish"; exit 1; }
+          [ -n "$APK" ] || { echo "ERROR: no app-debug.apk to publish"; exit 1; }
+          [ -f gatekeeper-ort-dfm.zip ] || { echo "ERROR: no gatekeeper-ort-dfm.zip to publish"; exit 1; }
+          SHA="$(printf '%s' "$GITHUB_SHA" | cut -c1-10)"
+          AAR_NAME="gatekeeper-release-$SHA.aar"
+          LITERT_NAME="gatekeeper-litert-$SHA.aar"
+          ORT_NAME="gatekeeper-ort-$SHA.aar"
+          APK_NAME="gatekeeper-demo-$SHA.apk"
+          DFM_NAME="gatekeeper-ort-dfm.zip"
+          cp "$AAR" "$OUT/$AAR_NAME"
+          cp "$LITERT_AAR" "$OUT/$LITERT_NAME"
+          cp "$ORT_AAR" "$OUT/$ORT_NAME"
+          cp "$APK" "$OUT/$APK_NAME"
+          cp "gatekeeper-ort-dfm.zip" "$OUT/$DFM_NAME"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          sum() { sha256sum "$1" | cut -d' ' -f1; }
+          NAMES="$AAR_NAME $LITERT_NAME $ORT_NAME $APK_NAME $DFM_NAME"
+          PAIRS=""
+          for n in $NAMES; do
+            PAIRS="$PAIRS\"$n\":\"$(sum "$OUT/$n")\","
+          done
+          PAIRS="${PAIRS%,}"
+          printf '{"commit":"%s","built_at":"%s","files":{%s}}\n' "$SHA" "$DATE" "$PAIRS" > "$OUT/aar-manifest.json"
+          gh release delete latest --yes --cleanup-tag --repo "${{ github.repository }}" 2>/dev/null || true
+          gh release create latest "$OUT/$AAR_NAME" "$OUT/$LITERT_NAME" "$OUT/$ORT_NAME" "$OUT/$APK_NAME" "$OUT/$DFM_NAME" "$OUT/aar-manifest.json" --repo "${{ github.repository }}" \
+            --title "ForgeGatekeeper AAR (latest)" \
+            --notes "Rolling release: core/LiteRT/ORT AARs + demo monolith APK + ORT DFM. Re-published from green main."
       - name: Upload AAR artifact
         uses: actions/upload-artifact@v6
         if: always()

@@ -19,6 +19,13 @@ class MediaPipeLlmClient(
     private val maxTopK: Int = 40
 ) : InferenceClient, AutoCloseable {
 
+    constructor(appContext: Context, modelFile: File) : this(
+        appContext,
+        modelFile,
+        2048,
+        40
+    )
+
     private val app: Context = appContext.applicationContext
 
     init {
