@@ -12,7 +12,11 @@ android {
         applicationId = "com.forgerig.gatekeeper.demo"
         minSdk = 31
         targetSdk = 35
-        versionCode = 5_000_000
+        // Bumped once to migrate off the retired split-APK lineage (old
+        // base/runtime splits also carried 5_000_000). A higher code lets the
+        // single monolith APK install as an update over any stale split pair.
+        // Keep stable for monolith updates; equal-code reinstalls stay valid.
+        versionCode = 5_000_001
         // Human-readable: the committing SHA beats a constant for debugging.
         versionName = System.getenv("GITHUB_SHA")?.take(10) ?: "1.0"
         ndk {
@@ -21,10 +25,27 @@ android {
             // dead weight from the uploaded APK.
             abiFilters += setOf("arm64-v8a")
         }
+        // Single-language resources: drops non-English translations bundled
+        // by AndroidX/MediaPipe, shrinking the monolith APK further.
+        resConfigs += setOf("en")
     }
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+    }
+
+    packaging {
+        // Single monolith APK: strip duplicate license/notice metadata that
+        // bloats the archive without affecting install or runtime.
+        resources {
+            excludes += setOf(
+                "META-INF/DEPENDENCIES",
+                "META-INF/LICENSE",
+                "META-INF/LICENSE.txt",
+                "META-INF/NOTICE",
+                "META-INF/NOTICE.txt"
+            )
+        }
     }
 
     signingConfigs {

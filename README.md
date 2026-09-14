@@ -69,7 +69,7 @@ No local SDK needed — cloud runners build the APK.
    MediaPipe backend. The bare-metal ORT native backend is a **Dynamic Feature
    Module (DFM)** published per release — the app downloads it from GitHub on
    demand when you pick the ORT path (see *Dynamic feature modules* below),
-   rather than shipping it inside the base APK.
+   rather than shipping it inside the single APK.
 3. Open **Gatekeeper Demo** (allow "unknown apps" once, if installing by hand).
 4. Try these:
    - Fluffy prompt: `Hi there, could you kindly summarize...` → SUCCESS
@@ -90,7 +90,7 @@ Instead of a split APK pair, the demo ships optional backends lazily:
   — it carries the `OrtGenAiClient` classes + `libonnxruntime.so`,
   `libonnxruntime-genai.so`, `libllm_engine.so`. The zip is cached in
   `files/dfms/` and only re-downloaded when a newer release is detected.
-- The MediaPipe `.task` path is always bundled in the base APK (it only needs
+- The MediaPipe `.task` path is always bundled in the single APK (it only needs
   the Maven `tasks-genai` artifact), so no extra DFM is required for it.
 
 To ship a new ORT DFM, upload `gatekeeper-ort-dfm.zip` (build it from the
@@ -98,10 +98,11 @@ To ship a new ORT DFM, upload `gatekeeper-ort-dfm.zip` (build it from the
 as an additional asset on the `latest` release; the demo's Download ORT backend
 (DFM) action will auto-pull it the next time.
 
-The frozen `versionCode = 5_000_000` is retained so the monolith APK remains
-upgrade-stable (equal-code reinstalls/installs are always permitted; a fresh
-install is required after the package rename `…nanogatekeeper.demo →
-…gatekeeper.demo`).
+The monolith APK carries `versionCode = 5_000_001`, bumped once to migrate off
+the retired split-APK lineage (old base/runtime splits carried `5_000_000`), so
+it installs as an update over any stale split pair. If your device still has
+the old split pair installed and the installer refuses the update, uninstall
+the old split install first, then install the single APK.
 
 ## Run a local LLM
 
