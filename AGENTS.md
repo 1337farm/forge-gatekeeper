@@ -37,16 +37,12 @@ APK on disk. Use `--latest-apk` instead only when you want the republished
 - Demo APK only (no split delivery):
   `./gradlew :app:assembleRelease --stacktrace`
 
-## Dynamic Feature Modules (DFM)
-The demo APK is a minimal bootstrap shell: core engine plus downloader. Both
-backends ship as separate per-artifact chunks listed with SHA-256 hashes in
-`dfm-chunks.json` on the rolling `latest` release (`gatekeeper-*-classes.zip`,
-`gatekeeper-*-jni.zip`, `tasks-genai-*.zip`, `guava-classes.zip`,
-`protobuf-javalite-classes.zip`). The app downloads only missing/changed
-chunks and verifies every hash. Monolith `gatekeeper-ort-dfm.zip` is still
-published for older app versions. Chunk assembly lives in
-`.github/workflows/android.yml` ("Build DFM chunks"); all downloads run in
-`DownloadService` (foreground, background-safe).
+## Monolith demo app
+The demo APK links both local backends directly (`:gatekeeper-ort`,
+`:gatekeeper-litert`) with their native libraries bundled — no runtime
+modules, no `DexClassLoader`, no DFM chunks. On demand the app downloads
+only the (multi-GB) model in `DownloadService` (foreground,
+background-safe).
 
 ## Hard rule: every change goes through a PR
 - **Never push directly to `main`** (it is protected). Every change,

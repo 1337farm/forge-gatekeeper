@@ -91,7 +91,12 @@ android {
 }
 
 dependencies {
+    // Monolith demo: both local backends ship inside the APK (ORT GenAI for
+    // folder models, MediaPipe for .task models). No runtime DFM download or
+    // classloading. The only thing fetched on demand is the multi-GB model.
     implementation(project(":gatekeeper"))
+    implementation(project(":gatekeeper-ort"))
+    implementation(project(":gatekeeper-litert"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     testImplementation("junit:junit:4.13.2")

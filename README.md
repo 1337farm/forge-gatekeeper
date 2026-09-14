@@ -65,10 +65,10 @@ No local SDK needed — cloud runners build the APK.
    `github.com/1337farm/forge-gatekeeper/releases/tag/latest`
    or pull the `ForgeGatekeeper-Demo-APK` artifact from any green CI run.
 2. Download **`gatekeeper-demo-<sha>.apk`** and install it as a single APK.
-   This is a minimal bootstrap shell: the core GatekeeperEngine plus a
-   downloader. Both inference backends are fetched on demand as
-   hash-verified chunks (see *Dynamic feature modules* below), so the APK
-   itself stays tiny.
+   This is the monolith demo: the core GatekeeperEngine with both local
+   backends (ORT GenAI and MediaPipe LLM Inference) plus their native
+   libraries bundled inside, so nothing is fetched at runtime except the
+   model itself.
 3. Open **Gatekeeper Demo** (allow "unknown apps" once, if installing by hand).
 4. Try these:
    - Fluffy prompt: `Hi there, could you kindly summarize...` → SUCCESS
@@ -80,33 +80,23 @@ No local SDK needed — cloud runners build the APK.
      Download above" and sends nothing anywhere (fail-closed). Tap the
      prefilled **Download** row once and the ORT folder lands on the phone.
 
-### Dynamic feature modules (DFM) from GitHub
+### Monolith APK (backends bundled)
 
-Instead of a split APK pair, the demo fetches each backend as separate
-hash-verified chunks, one per upstream artifact:
+Instead of runtime modules, the demo APK links both inference backends
+directly (`:gatekeeper-ort` for ORT folder models, `:gatekeeper-litert` for
+MediaPipe `.task` files) with their JNI native libraries
+(`libonnxruntime.so`, `libonnxruntime-genai.so`, `libllm_engine.so`,
+`libmediapipe_tasks_genai.so`). No `DexClassLoader`, no hashes, no
+background backend fetching — the APK installs and inference works as soon
+as a model is on disk.
 
-- **ORT backend (`ort`):** `gatekeeper-ort-classes.zip` (`OrtGenAiClient` +
-  JNI bridge) and `gatekeeper-ort-jni.zip` (`libonnxruntime.so`,
-  `libonnxruntime-genai.so`, `libllm_engine.so`).
-- **MediaPipe backend (`litert`):** `gatekeeper-litert-classes.zip`
-  (`MediaPipeLlmClient`), `tasks-genai-classes.zip`,
-  `tasks-genai-jni.zip`, `guava-classes.zip`, and
-  `protobuf-javalite-classes.zip`.
-
-The `latest` GitHub release carries a `dfm-chunks.json` manifest listing
-every chunk with its SHA-256. The app downloads only chunks that are missing
-or whose hash changed, verifies each one, and caches them in `files/dfms/`.
-Native libraries ship inside the `*-jni.zip` chunks, so a native rev never
-forces a re-download of the classes chunks.
-
-All downloads (models and backend chunks) run in a foreground service with a
-progress notification, so they keep going when the app is backgrounded. The
+Only the model itself is downloaded on demand (a foreground service with a
+progress notification, so multi-GB downloads survive backgrounding). The
 app also reads `aar-manifest.json` from the `latest` release on launch and
 offers a one-tap link to the release page when a newer build is published.
 
-To ship new chunks, CI rebuilds them from the `:gatekeeper-ort` /
-`:gatekeeper-litert` outputs on every green `main` build and uploads them
-alongside `dfm-chunks.json` on the `latest` release.
+The `latest` GitHub release carries the core/LiteRT/ORT AARs, the monolith
+demo APK, and `aar-manifest.json`. Nothing else is fetched at runtime.
 
 The monolith APK carries `versionCode = 5_000_001`, bumped once to migrate off
 the retired split-APK lineage (old base/runtime splits carried `5_000_000`), so

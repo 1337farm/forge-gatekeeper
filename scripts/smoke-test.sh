@@ -32,13 +32,20 @@ for lib in 'jni/arm64-v8a/libllm_engine.so' 'jni/arm64-v8a/libonnxruntime.so' 'j
 done
 echo "ORT natives present (llm_engine + onnxruntime + onnxruntime-genai)"
 
-echo "==> demo APK checks (arm64-only natives)"
+echo "==> demo APK checks (arm64-only natives, both backends bundled)"
 ./gradlew :app:assembleRelease --stacktrace
 APP_APK="$(find app/build/outputs/apk/release -name '*.apk' | head -1)"
 [ -n "$APP_APK" ] || { echo "ERROR: demo APK not built"; exit 1; }
 unzip -l "$APP_APK" 'lib/*' | grep -qE 'lib/(x86|x86_64|armeabi)/' && {
   echo "ERROR: non-arm64 native ABI leaked into demo APK"; exit 1; }
-echo "demo APK OK: arm64-v8a only"
+# Monolith: ORT (llm_engine/onnxruntime) and MediaPipe (libmediapipe_tasks_genai) natives
+# must both be inside the APK — nothing is fetched at runtime anymore.
+for lib in 'lib/arm64-v8a/libllm_engine.so' 'lib/arm64-v8a/libonnxruntime.so' 'lib/arm64-v8a/libonnxruntime-genai.so' 'lib/arm64-v8a/libllm_inference_engine_jni.so'; do
+  unzip -l "$APP_APK" | grep -q "$lib" || { echo "ERROR: $lib missing from monolith demo APK"; exit 1; }
+done
+echo "demo APK OK: arm64-v8a only, ORT + MediaPipe natives bundled"
+echo "demo APK size:"
+ls -lh "$APP_APK"
 
 echo "==> archive checks"
 # Bytecode defense: no plaintext system-prompt strings in the core AAR classes.
