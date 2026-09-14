@@ -20,9 +20,5 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <!-- Bare-metal ORT GenAI streaming demo (launched from DemoActivity). -->
-        <activity
-            android:name=".MainActivity"
-            android:exported="false" />
     </application>
 </manifest>

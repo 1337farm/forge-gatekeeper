@@ -7,7 +7,6 @@
     <string name="hint_model_url">Model .task URL or a Hugging Face owner/repo[:subfolder]</string>
     <string name="hint_hf_token">HF token (optional — leave blank; only gated repos need one)</string>
     <string name="download_model">Download model</string>
-    <string name="open_ort_demo">Open ORT native demo</string>
     <string name="copy_result">Copy result</string>
     <string name="copied">Copied.</string>
     <string name="nothing_to_copy">Nothing to copy yet.</string>

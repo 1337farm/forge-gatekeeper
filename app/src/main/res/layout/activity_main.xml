@@ -10,9 +10,10 @@
         android:orientation="vertical">
 
         <TextView
+            android:id="@+id/header"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="ForgeGatekeeper demo"
+            android:text="ForgeGatekeeper Demo"
             android:textSize="20sp"
             android:textStyle="bold" />
 
@@ -45,25 +46,34 @@
                 android:text="@string/copy_result" />
         </LinearLayout>
 
-        <Button
-            android:id="@+id/ortDemoButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/open_ort_demo" />
-
         <Switch
             android:id="@+id/bypassGatekeeper"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="left"
+            android:layout_marginTop="8dp"
             android:text="@string/bypass_gatekeeper" />
+
+        <TextView
+            android:id="@+id/dfmStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textSize="12sp"
+            android:text="ORT backend: not downloaded" />
+
+        <Button
+            android:id="@+id/downloadDFMButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Download ORT backend (DFM)" />
 
         <EditText
             android:id="@+id/modelUrl"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
+            android:layout_marginTop="8dp"
             android:hint="@string/hint_model_url"
             android:inputType="textUri"
             android:singleLine="true"

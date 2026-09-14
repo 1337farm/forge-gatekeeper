@@ -17,6 +17,13 @@ class OrtGenAiClient(
     private val useXnnpack: Boolean = true
 ) : InferenceClient, AutoCloseable {
 
+    constructor(appContext: Context, modelDir: File) : this(
+        appContext,
+        modelDir,
+        512,
+        true
+    )
+
     @Suppress("unused")
     private val app: Context = appContext.applicationContext
 
