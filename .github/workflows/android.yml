@@ -117,7 +117,7 @@ jobs:
             grep -A3 "<artifactId>$1</artifactId>" "$POM" | grep -o '<version>[^<]*' | head -1 | cut -c10-
           }
           dep_jar() {
-            find "$CACHE/$1/$2/$3" -name '*.jar' ! -name '*sources*' ! -name '*javadoc*' | head -1
+            find "$CACHE/$1/$2" -name '*.jar' ! -name '*sources*' ! -name '*javadoc*' | head -1
           }
           TMP="$(mktemp -d)"
           trap 'rm -rf "$TMP"' EXIT
@@ -126,8 +126,8 @@ jobs:
           unzip -q -o "$ORT_AAR" 'classes.jar' 'jni/arm64-v8a/*.so' -d "$TMP/ort-aar"
           unzip -q -o "$LITERT_AAR" 'classes.jar' -d "$TMP/lr-aar"
           unzip -q -o "$GENAI_AAR" 'classes.jar' 'jni/arm64-v8a/*.so' -d "$TMP/genai-aar"
-          GUAVA_JAR="$(dep_jar com.google.guava/guava guava "$(dep_version guava)")"
-          PROTO_JAR="$(dep_jar com.google.protobuf/protobuf-javalite protobuf-javalite "$(dep_version protobuf-javalite)")"
+          GUAVA_JAR="$(dep_jar com.google.guava/guava "$(dep_version guava)")"
+          PROTO_JAR="$(dep_jar com.google.protobuf/protobuf-javalite "$(dep_version protobuf-javalite)")"
           [ -n "$GUAVA_JAR" ] || { echo "ERROR: guava jar not in Gradle cache"; exit 1; }
           [ -n "$PROTO_JAR" ] || { echo "ERROR: protobuf-javalite jar not in Gradle cache"; exit 1; }
           chunk_jar() {
