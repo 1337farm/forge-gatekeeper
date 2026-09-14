@@ -1,7 +1,14 @@
 package com.forgerig.gatekeeper.demo
 
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
@@ -10,22 +17,26 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.Switch
-import androidx.activity.ComponentActivity
-import androidx.lifecycle.lifecycleScope
+import android.app.Activity
 import com.forgerig.gatekeeper.engine.GatekeeperEngine
 import com.forgerig.gatekeeper.engine.InferenceClient
-import com.forgerig.gatekeeper.litert.MediaPipeLlmClient
 import com.forgerig.gatekeeper.model.GatekeeperConfig
 import com.forgerig.gatekeeper.model.GatekeeperResult
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.IOException
 
-class DemoActivity : ComponentActivity() {
+class DemoActivity : Activity() {
+
+    private val scope = MainScope()
 
     private var localEngine: GatekeeperEngine? = null
     private var localClient: AutoCloseable? = null
     private var ortDfmReady = false
+    private var litertDfmReady = false
+    private var downloadReceiver: BroadcastReceiver? = null
 
     private fun capabilityLine(): String {
         val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
@@ -39,6 +50,12 @@ class DemoActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
 
         val input = findViewById<EditText>(R.id.input)
         val runButton = findViewById<Button>(R.id.runButton)
@@ -54,20 +71,17 @@ class DemoActivity : ComponentActivity() {
         val downloadButton = findViewById<Button>(R.id.downloadButton)
         val downloadProgress = findViewById<ProgressBar>(R.id.downloadProgress)
         val modelStatus = findViewById<TextView>(R.id.modelStatus)
+        val updateStatus = findViewById<TextView>(R.id.updateStatus)
 
         downloadDFMButton.setOnClickListener {
-            lifecycleScope.launch {
-                downloadDFMButton.isEnabled = false
-                dfmStatus.text = "Downloading ORT backend DFM…"
-                val ok = DfmLoader(this@DemoActivity).ensureDfm("ort")
-                ortDfmReady = ok
-                dfmStatus.text = if (ok) "ORT backend ready." else "ORT download failed."
-                downloadDFMButton.isEnabled = true
-            }
+            downloadDFMButton.isEnabled = false
+            dfmStatus.text = "Downloading ORT backend in background — see notification."
+            DownloadService.startDfmDownload(this, "ort")
         }
 
         modelUrl.setText(ModelDownloader.DEFAULT_ORT_REF)
         refreshModelStatus(modelStatus)
+        checkForUpdate(updateStatus)
 
         downloadButton.setOnClickListener {
             val spec = modelUrl.text.toString().trim()
@@ -77,37 +91,33 @@ class DemoActivity : ComponentActivity() {
             }
             downloadButton.isEnabled = false
             downloadProgress.visibility = View.VISIBLE
-            downloadProgress.progress = 0
-            modelStatus.text = "Resolving $spec…"
-            lifecycleScope.launch {
-                try {
-                    val token = hfToken.text.toString() // optional; blank = public repos only
-                    if (spec.contains("://")) {
-                        val fileName = spec.substringAfterLast('/').substringBefore('?')
-                            .takeIf { it.endsWith(".task", ignoreCase = true) }
-                            ?: ModelDownloader.DEFAULT_MODEL_FILE
-                        val dest = File(filesDir, "models").let { File(it, fileName) }
-                        modelStatus.text = "Downloading $fileName…"
-                        ModelDownloader.download(spec, token, dest) { done, total ->
-                            runOnUiThread { report(done, total, modelStatus, downloadProgress) }
-                        }
-                    } else {
-                        val ref = ModelDownloader.parseRepoRef(spec)
-                        val dir = File(filesDir, "ort-models")
-                            .let { File(it, ref.repo.substringAfterLast('/').take(40)) }
-                        modelStatus.text = "Downloading ${ref.repo}${ref.subfolder?.let { "/$it" } ?: ""}…"
-                        ModelDownloader.downloadOrtFolder(ref, dir) { done, total ->
-                            runOnUiThread { report(done, total, modelStatus, downloadProgress) }
-                        }
+            downloadProgress.isIndeterminate = true
+            modelStatus.text = "Downloading in background — see notification."
+            DownloadService.startModelDownload(this, spec, hfToken.text.toString())
+        }
+
+        downloadReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                val kind = intent.getStringExtra(DownloadService.EXTRA_KIND).orEmpty()
+                val ok = intent.getBooleanExtra(DownloadService.EXTRA_OK, false)
+                val message = intent.getStringExtra(DownloadService.EXTRA_MESSAGE).orEmpty()
+                when {
+                    kind == DownloadService.KIND_MODEL -> {
+                        downloadButton.isEnabled = true
+                        downloadProgress.visibility = View.GONE
+                        downloadProgress.isIndeterminate = false
+                        closeLocalEngine()
+                        refreshModelStatus(modelStatus)
+                        modelStatus.text = if (ok) "Model ready: $message" else "Download failed: $message"
+                        if (ok) Toast.makeText(this@DemoActivity, "Model ready.", Toast.LENGTH_SHORT).show()
                     }
-                    closeLocalEngine()
-                    refreshModelStatus(modelStatus)
-                    Toast.makeText(this@DemoActivity, "Model ready.", Toast.LENGTH_SHORT).show()
-                } catch (t: Throwable) {
-                    modelStatus.text = "Download failed: ${t.message} — tap Download again to resume."
-                } finally {
-                    downloadButton.isEnabled = true
-                    downloadProgress.visibility = View.GONE
+                    kind.startsWith(DownloadService.KIND_DFM) -> {
+                        downloadDFMButton.isEnabled = true
+                        ortDfmReady = false
+                        litertDfmReady = false
+                        dfmStatus.text = if (ok) message else "Download failed: $message"
+                        if (ok) Toast.makeText(this@DemoActivity, message, Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         }
@@ -142,7 +152,7 @@ class DemoActivity : ComponentActivity() {
             statusView.text = "Running on-device…"
             outputView.text = ""
             telemetryView.text = ""
-            lifecycleScope.launch {
+            scope.launch {
                 try {
                     val model = pickLocalModel()
                     if (model == null) {
@@ -197,7 +207,16 @@ class DemoActivity : ComponentActivity() {
             dfmStatus.text = "ORT backend ready."
             return dfmLoader.getInferenceClient("ort", model)
         } else {
-            return MediaPipeLlmClient(applicationContext, model)
+            dfmStatus.text = "Checking MediaPipe backend…"
+            val ok = dfmLoader.ensureDfm("litert")
+            litertDfmReady = ok
+            if (!ok) {
+                dfmStatus.text = "MediaPipe backend download failed — check connection and retry."
+                throw IOException("MediaPipe backend DFM could not be downloaded")
+            }
+            dfmLoader.loadNativeLibs("litert")
+            dfmStatus.text = "MediaPipe backend ready."
+            return dfmLoader.getInferenceClient("litert", model)
         }
     }
 
@@ -233,17 +252,44 @@ class DemoActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        downloadReceiver?.let {
+            registerReceiver(it, IntentFilter(DownloadService.ACTION_DONE), RECEIVER_NOT_EXPORTED)
+        }
+    }
+
+    override fun onStop() {
+        downloadReceiver?.let { runCatching { unregisterReceiver(it) } }
+        super.onStop()
+    }
+
     override fun onDestroy() {
+        scope.cancel()
         closeLocalEngine()
         super.onDestroy()
     }
 
-    private fun report(done: Long, total: Long, modelStatus: TextView, downloadProgress: ProgressBar) {
-        if (total > 0) {
-            downloadProgress.progress = ((done * 100) / total).toInt()
-            modelStatus.text = "Downloading: ${done / 1_048_576} / ${total / 1_048_576} MB"
-        } else {
-            modelStatus.text = "Downloading: ${done / 1_048_576} MB"
+    private fun checkForUpdate(updateStatus: TextView) {
+        scope.launch {
+            try {
+                val manifest = fetchReleaseManifest()
+                val installed = packageManager.getPackageInfo(packageName, 0).versionName.orEmpty()
+                if (installed != "1.0" && manifest.commit.isNotBlank() && manifest.commit != installed) {
+                    updateStatus.visibility = View.VISIBLE
+                    updateStatus.text = "Update available (${manifest.commit}) — tap to open the release."
+                    updateStatus.setOnClickListener {
+                        startActivity(
+                            Intent(
+                                Intent.ACTION_VIEW,
+                                Uri.parse("https://github.com/1337farm/forge-gatekeeper/releases/tag/latest")
+                            )
+                        )
+                    }
+                }
+            } catch (t: Throwable) {
+                updateStatus.visibility = View.GONE
+            }
         }
     }
 

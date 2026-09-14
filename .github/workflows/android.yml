@@ -69,13 +69,13 @@ jobs:
       - name: Smoke test (unit + AAR + archive checks)
         run: bash scripts/smoke-test.sh
       - name: Assemble demo APK
-        run: ./gradlew :app:assembleDebug --stacktrace
+        run: ./gradlew :app:assembleRelease --stacktrace
       - name: Upload demo APK artifact
         uses: actions/upload-artifact@v6
         if: always()
         with:
           name: ForgeGatekeeper-Demo-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/release/app-release.apk
           retention-days: 30
       - name: Build ORT DFM ZIP
         run: |
@@ -100,6 +100,106 @@ jobs:
           name: ForgeGatekeeper-ORT-DFM
           path: gatekeeper-ort-dfm.zip
           retention-days: 30
+      - name: Build DFM chunks
+        run: |
+          set -euo pipefail
+          LITERT_AAR="$(find gatekeeper-litert/build/outputs/aar -name 'gatekeeper-litert-release.aar' | head -1)"
+          [ -n "$LITERT_AAR" ] || { echo "ERROR: no gatekeeper-litert-release.aar for DFM"; exit 1; }
+          ORT_AAR="$(find gatekeeper-ort/build/outputs/aar -name 'gatekeeper-ort-release.aar' | head -1)"
+          [ -n "$ORT_AAR" ] || { echo "ERROR: no gatekeeper-ort-release.aar for DFM"; exit 1; }
+          GENAI_VER="$(grep -o 'tasks-genai:[0-9.]*' gatekeeper-litert/build.gradle.kts | head -1 | cut -d: -f2)"
+          [ -n "$GENAI_VER" ] || { echo "ERROR: cannot parse tasks-genai version"; exit 1; }
+          CACHE="$HOME/.gradle/caches/modules-2/files-2.1"
+          GENAI_AAR="$(find "$CACHE/com.google.mediapipe/tasks-genai/$GENAI_VER" -name '*.aar' | head -1)"
+          [ -n "$GENAI_AAR" ] || { echo "ERROR: tasks-genai AAR not in Gradle cache"; exit 1; }
+          POM="$(find "$CACHE/com.google.mediapipe/tasks-genai/$GENAI_VER" -name '*.pom' | head -1)"
+          dep_version() {
+            grep -A3 "<artifactId>$1</artifactId>" "$POM" | grep -o '<version>[^<]*' | head -1 | cut -c10-
+          }
+          dep_jar() {
+            find "$CACHE/$1/$2" -name '*.jar' ! -name '*sources*' ! -name '*javadoc*' | head -1
+          }
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          ROOT="$PWD"
+          mkdir -p "$TMP/ort-aar" "$TMP/lr-aar" "$TMP/genai-aar"
+          unzip -q -o "$ORT_AAR" 'classes.jar' 'jni/arm64-v8a/*.so' -d "$TMP/ort-aar"
+          unzip -q -o "$LITERT_AAR" 'classes.jar' -d "$TMP/lr-aar"
+          unzip -q -o "$GENAI_AAR" 'classes.jar' 'jni/arm64-v8a/*.so' -d "$TMP/genai-aar"
+          GUAVA_JAR="$(dep_jar com.google.guava/guava "$(dep_version guava)")"
+          PROTO_JAR="$(dep_jar com.google.protobuf/protobuf-javalite "$(dep_version protobuf-javalite)")"
+          [ -n "$GUAVA_JAR" ] || { echo "ERROR: guava jar not in Gradle cache"; exit 1; }
+          [ -n "$PROTO_JAR" ] || { echo "ERROR: protobuf-javalite jar not in Gradle cache"; exit 1; }
+          chunk_jar() {
+            local out="$1"; shift
+            local stage="$TMP/stage-$out"
+            mkdir -p "$stage"
+            local j
+            for j in "$@"; do
+              unzip -q -n "$j" -x 'META-INF/*' -d "$stage"
+            done
+            rm -f "$ROOT/$out"
+            (cd "$stage" && zip -qr "$ROOT/$out" .)
+          }
+          chunk_jni() {
+            local out="$1" src="$2"
+            local stage="$TMP/stage-$out"
+            mkdir -p "$stage/jni/arm64-v8a"
+            cp "$src"/jni/arm64-v8a/*.so "$stage/jni/arm64-v8a/"
+            rm -f "$ROOT/$out"
+            (cd "$stage" && zip -qr "$ROOT/$out" jni)
+          }
+          chunk_jar gatekeeper-ort-classes.zip "$TMP/ort-aar/classes.jar"
+          chunk_jni gatekeeper-ort-jni.zip "$TMP/ort-aar"
+          chunk_jar gatekeeper-litert-classes.zip "$TMP/lr-aar/classes.jar"
+          chunk_jar tasks-genai-classes.zip "$TMP/genai-aar/classes.jar"
+          chunk_jni tasks-genai-jni.zip "$TMP/genai-aar"
+          chunk_jar guava-classes.zip "$GUAVA_JAR"
+          chunk_jar protobuf-javalite-classes.zip "$PROTO_JAR"
+          unzip -l gatekeeper-litert-classes.zip | grep -q 'com/forgerig/gatekeeper/litert/MediaPipeLlmClient.class' || {
+            echo "ERROR: MediaPipeLlmClient.class missing from litert chunk"; exit 1; }
+          unzip -l tasks-genai-classes.zip | grep -q 'com/google/mediapipe/' || {
+            echo "ERROR: tasks-genai classes missing from genai chunk"; exit 1; }
+          python3 - "$ROOT" "$GITHUB_SHA" <<'EOF'
+          import hashlib, json, sys
+          root, sha = sys.argv[1], sys.argv[2]
+          spec = {
+              "ort": ["gatekeeper-ort-classes.zip", "gatekeeper-ort-jni.zip"],
+              "litert": ["gatekeeper-litert-classes.zip", "tasks-genai-classes.zip",
+                         "tasks-genai-jni.zip", "guava-classes.zip",
+                         "protobuf-javalite-classes.zip"],
+          }
+          def digest(path):
+              h = hashlib.sha256()
+              with open(path, "rb") as f:
+                  for b in iter(lambda: f.read(1 << 20), b""):
+                      h.update(b)
+              return h.hexdigest()
+          manifest = {"release": sha[:10]}
+          for backend, names in spec.items():
+              manifest[backend] = [
+                  {"name": name, "sha256": digest(f"{root}/{name}")} for name in names
+              ]
+          with open(f"{root}/dfm-chunks.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+          print(json.dumps(manifest, indent=2))
+          EOF
+          ls -lh gatekeeper-*.zip tasks-genai-*.zip guava-*.zip protobuf-*.zip dfm-chunks.json
+      - name: Upload DFM chunks artifact
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: ForgeGatekeeper-DFM-Chunks
+          path: |
+            gatekeeper-ort-classes.zip
+            gatekeeper-ort-jni.zip
+            gatekeeper-litert-classes.zip
+            tasks-genai-classes.zip
+            tasks-genai-jni.zip
+            guava-classes.zip
+            protobuf-javalite-classes.zip
+            dfm-chunks.json
+          retention-days: 30
       - name: Publish rolling latest release
         if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
         env:
@@ -111,26 +211,34 @@ jobs:
           AAR="$(find gatekeeper/build/outputs/aar -name 'gatekeeper-release.aar' | head -1)"
           LITERT_AAR="$(find gatekeeper-litert/build/outputs/aar -name 'gatekeeper-litert-release.aar' | head -1)"
           ORT_AAR="$(find gatekeeper-ort/build/outputs/aar -name 'gatekeeper-ort-release.aar' | head -1)"
-          APK="$(find app/build/outputs/apk/debug -name 'app-debug.apk' | head -1)"
+          APK="$(find app/build/outputs/apk/release -name 'app-release.apk' | head -1)"
           [ -n "$AAR" ] || { echo "ERROR: no gatekeeper-release.aar to publish"; exit 1; }
           [ -n "$LITERT_AAR" ] || { echo "ERROR: no gatekeeper-litert-release.aar to publish"; exit 1; }
           [ -n "$ORT_AAR" ] || { echo "ERROR: no gatekeeper-ort-release.aar to publish"; exit 1; }
-          [ -n "$APK" ] || { echo "ERROR: no app-debug.apk to publish"; exit 1; }
+          [ -n "$APK" ] || { echo "ERROR: no app-release.apk to publish"; exit 1; }
           [ -f gatekeeper-ort-dfm.zip ] || { echo "ERROR: no gatekeeper-ort-dfm.zip to publish"; exit 1; }
+          [ -f gatekeeper-litert-dfm.zip ] || { echo "ERROR: no gatekeeper-litert-dfm.zip to publish"; exit 1; }
+          for chunk in gatekeeper-ort-classes.zip gatekeeper-ort-jni.zip gatekeeper-litert-classes.zip tasks-genai-classes.zip tasks-genai-jni.zip guava-classes.zip protobuf-javalite-classes.zip dfm-chunks.json; do
+            [ -f "$chunk" ] || { echo "ERROR: no $chunk to publish"; exit 1; }
+          done
           SHA="$(printf '%s' "$GITHUB_SHA" | cut -c1-10)"
           AAR_NAME="gatekeeper-release-$SHA.aar"
           LITERT_NAME="gatekeeper-litert-$SHA.aar"
           ORT_NAME="gatekeeper-ort-$SHA.aar"
           APK_NAME="gatekeeper-demo-$SHA.apk"
           DFM_NAME="gatekeeper-ort-dfm.zip"
+          LITERT_DFM_NAME="gatekeeper-litert-dfm.zip"
+          CHUNKS="gatekeeper-ort-classes.zip gatekeeper-ort-jni.zip gatekeeper-litert-classes.zip tasks-genai-classes.zip tasks-genai-jni.zip guava-classes.zip protobuf-javalite-classes.zip dfm-chunks.json"
           cp "$AAR" "$OUT/$AAR_NAME"
           cp "$LITERT_AAR" "$OUT/$LITERT_NAME"
           cp "$ORT_AAR" "$OUT/$ORT_NAME"
           cp "$APK" "$OUT/$APK_NAME"
           cp "gatekeeper-ort-dfm.zip" "$OUT/$DFM_NAME"
+          cp "gatekeeper-litert-dfm.zip" "$OUT/$LITERT_DFM_NAME"
+          for chunk in $CHUNKS; do cp "$chunk" "$OUT/$chunk"; done
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           sum() { sha256sum "$1" | cut -d' ' -f1; }
-          NAMES="$AAR_NAME $LITERT_NAME $ORT_NAME $APK_NAME $DFM_NAME"
+          NAMES="$AAR_NAME $LITERT_NAME $ORT_NAME $APK_NAME $DFM_NAME $LITERT_DFM_NAME $CHUNKS"
           PAIRS=""
           for n in $NAMES; do
             PAIRS="$PAIRS\"$n\":\"$(sum "$OUT/$n")\","
@@ -138,9 +246,9 @@ jobs:
           PAIRS="${PAIRS%,}"
           printf '{"commit":"%s","built_at":"%s","files":{%s}}\n' "$SHA" "$DATE" "$PAIRS" > "$OUT/aar-manifest.json"
           gh release delete latest --yes --cleanup-tag --repo "${{ github.repository }}" 2>/dev/null || true
-          gh release create latest "$OUT/$AAR_NAME" "$OUT/$LITERT_NAME" "$OUT/$ORT_NAME" "$OUT/$APK_NAME" "$OUT/$DFM_NAME" "$OUT/aar-manifest.json" --repo "${{ github.repository }}" \
+          gh release create latest $OUT/* --repo "${{ github.repository }}" \
             --title "ForgeGatekeeper AAR (latest)" \
-            --notes "Rolling release: core/LiteRT/ORT AARs + demo monolith APK + ORT DFM. Re-published from green main."
+            --notes "Rolling release: core/LiteRT/ORT AARs + demo monolith APK + ORT/LiteRT DFMs + per-artifact DFM chunks. Re-published from green main."
       - name: Upload AAR artifact
         uses: actions/upload-artifact@v6
         if: always()

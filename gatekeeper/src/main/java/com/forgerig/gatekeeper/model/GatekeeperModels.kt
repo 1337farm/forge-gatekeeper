@@ -1,7 +1,5 @@
 package com.forgerig.gatekeeper.model
 
-import kotlinx.serialization.Serializable
-
 enum class GatekeeperStep {
     DETERMINISTIC_SCRUB,
     HARDWARE_CIRCUIT_CHECK,
@@ -18,7 +16,6 @@ enum class InjectionVerdict { SAFE, MALICIOUS }
 enum class CompletenessStatus { READY, MISSING_CONTEXT }
 enum class AuditStatus { MATCH, MISMATCH }
 
-@Serializable
 data class StepExecutionRecord(
     val order: Int,
     val step: GatekeeperStep,
@@ -28,7 +25,6 @@ data class StepExecutionRecord(
     val durationMs: Long = 0L
 )
 
-@Serializable
 data class ExecutionTelemetry(
     val executionOrder: List<StepExecutionRecord>,
     val skippedSteps: Map<String, String>,
@@ -105,7 +101,6 @@ sealed interface AccuracyAuditResult {
     ) : AccuracyAuditResult
 }
 
-@Serializable
 data class StageAPayload(
     val heat: String,
     val injection: String,
@@ -115,7 +110,6 @@ data class StageAPayload(
     val missing_context: String = ""
 )
 
-@Serializable
 data class StageDPayload(
     val status: String,
     val drift_score: Double = 0.0,

@@ -33,20 +33,20 @@ APK on disk. Use `--latest-apk` instead only when you want the republished
 - Smoke test (unit tests + AAR assembly + archive checks):
   `bash scripts/smoke-test.sh`
 - Full AARs + demo APK (needs NDK 27 + CMake 3.22.1 for `:gatekeeper-ort`):
-  `./gradlew :gatekeeper:assembleRelease :gatekeeper-litert:assembleRelease :gatekeeper-ort:assembleRelease :app:assembleDebug --stacktrace`
+  `./gradlew :gatekeeper:assembleRelease :gatekeeper-litert:assembleRelease :gatekeeper-ort:assembleRelease :app:assembleRelease --stacktrace`
 - Demo APK only (no split delivery):
-  `./gradlew :app:assembleDebug --stacktrace`
+  `./gradlew :app:assembleRelease --stacktrace`
 
 ## Dynamic Feature Modules (DFM)
-The demo APK ships the core engine plus the bundled MediaPipe backend.
-The ORT native backend is a separate DFM downloaded from
-GitHub at runtime (see README). The DFM ZIP (`gatekeeper-ort-dfm.zip`)
-is published as an asset on the rolling `latest` release alongside the
-AARs and the monolith APK. To rebuild the DFM locally:
-1. `./gradlew :gatekeeper-ort:assembleRelease`
-2. Unzip `gatekeeper-ort/build/outputs/aar/gatekeeper-ort-release.aar`
-3. Zip `classes.jar` + `jni/` as `gatekeeper-ort-dfm.zip`
-4. Upload to the `latest` release.
+The demo APK is a minimal bootstrap shell: core engine plus downloader. Both
+backends ship as separate per-artifact chunks listed with SHA-256 hashes in
+`dfm-chunks.json` on the rolling `latest` release (`gatekeeper-*-classes.zip`,
+`gatekeeper-*-jni.zip`, `tasks-genai-*.zip`, `guava-classes.zip`,
+`protobuf-javalite-classes.zip`). The app downloads only missing/changed
+chunks and verifies every hash. Monolith `gatekeeper-ort-dfm.zip` is still
+published for older app versions. Chunk assembly lives in
+`.github/workflows/android.yml` ("Build DFM chunks"); all downloads run in
+`DownloadService` (foreground, background-safe).
 
 ## Hard rule: every change goes through a PR
 - **Never push directly to `main`** (it is protected). Every change,

@@ -8,12 +8,6 @@
     <methods>;
 }
 -keepattributes RuntimeVisibleAnnotations,AnnotationDefault
--keepclassmembers class kotlinx.serialization.json.** { *; }
--keepclasseswithmembers class ** {
-    @kotlinx.serialization.Serializable <fields>;
-}
--keep class **$$serializer { *; }
--keepclassmembers class **$$serializer { *; }
 -keep interface com.forgerig.gatekeeper.engine.** { *; }
 -keep class com.forgerig.gatekeeper.engine.GatekeeperEngine { *; }
 -renamesourcefileattribute SourceFile
