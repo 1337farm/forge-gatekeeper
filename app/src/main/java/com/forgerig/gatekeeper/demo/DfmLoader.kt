@@ -158,7 +158,7 @@ class DfmLoader(private val context: Context) {
             throw IOException("Latest release lookup HTTP ${connection.responseCode}")
         }
         val body = connection.inputStream.bufferedReader().use { it.readText() }
-        return json.decodeFromString(body)
+        return json.decodeFromString(DfmLatestRelease.serializer(), body)
     }
 
     private fun metadataFile(dfmBackendDir: File): File {
@@ -169,7 +169,7 @@ class DfmLoader(private val context: Context) {
         return try {
             val file = metadataFile(dfmBackendDir)
             if (!file.isFile) return null
-            json.decodeFromString<DfmMetadata>(file.readText())
+            json.decodeFromString(DfmMetadata.serializer(), file.readText())
         } catch (e: Exception) {
             Log.w(tag, "Ignoring unreadable DFM metadata", e)
             null
@@ -177,7 +177,7 @@ class DfmLoader(private val context: Context) {
     }
 
     private fun writeMetadata(dfmBackendDir: File, metadata: DfmMetadata) {
-        metadataFile(dfmBackendDir).writeText(json.encodeToString(metadata))
+        metadataFile(dfmBackendDir).writeText(json.encodeToString(DfmMetadata.serializer(), metadata))
     }
 
     private fun extractZip(zip: File, dest: File) {
