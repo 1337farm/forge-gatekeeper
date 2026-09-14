@@ -88,7 +88,8 @@ class DfmLoader(private val context: Context) {
             true
         } catch (e: Exception) {
             runCatching { dir.deleteRecursively() }
-            throw e
+            Log.e(tag, "DFM $backend chunks failed", e)
+            false
         }
     }
 
