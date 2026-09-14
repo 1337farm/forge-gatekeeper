@@ -23,8 +23,8 @@ class DemoActivity : AppCompatActivity() {
 
     private var localEngine: GatekeeperEngine? = null
     private var localClient: AutoCloseable? = null
-    private var localModelPath: File? = null
     private var ortDfmReady = false
+    private var litertDfmReady = false
 
     private fun capabilityLine(): String {
         val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
@@ -49,6 +49,7 @@ class DemoActivity : AppCompatActivity() {
         val dfmStatus = findViewById<TextView>(R.id.dfmStatus)
         val bypassSwitch = findViewById<Switch>(R.id.bypassGatekeeper)
         val modelUrl = findViewById<EditText>(R.id.modelUrl)
+        val hfToken = findViewById<EditText>(R.id.hfToken)
         val downloadButton = findViewById<Button>(R.id.downloadButton)
         val downloadProgress = findViewById<ProgressBar>(R.id.downloadProgress)
         val modelStatus = findViewById<TextView>(R.id.modelStatus)
@@ -150,23 +151,17 @@ class DemoActivity : AppCompatActivity() {
                     val mode = if (model.isDirectory) "[ORT native] " else "[MediaPipe] "
                     val bypass = bypassSwitch.isChecked
                     val dfmLoader = DfmLoader(this@DemoActivity)
-
-                    val engine = if (bypass) {
-                        val client = getBypassClient(model, dfmLoader)
-                        localClient = client as AutoCloseable
-                        GatekeeperEngine(applicationContext, client)
-                    } else {
-                        val client = getClient(model, dfmLoader)
-                        localClient = client as AutoCloseable
-                        GatekeeperEngine(applicationContext, client)
-                    }
-                    localEngine = engine
-                    localModelPath = model
+                    val client = getClient(model, dfmLoader, bypass)
 
                     if (bypass) {
-                        val result = engine.processPrompt(raw, GatekeeperConfig())
-                        render(result, statusView, outputView, telemetryView, mode)
+                        val rawResult = client.generate("", raw)
+                        outputView.text = rawResult
+                        statusView.text = "$mode RAW (gatekeeper bypassed)"
+                        telemetryView.text = "Gatekeeper pipeline bypassed — no sanitization, redaction, compression, or audit."
                     } else {
+                        val engine = GatekeeperEngine(applicationContext, client)
+                        localEngine = engine
+                        localClient = client as AutoCloseable
                         val result = engine.processPrompt(raw, GatekeeperConfig())
                         render(result, statusView, outputView, telemetryView, mode)
                     }
@@ -179,27 +174,19 @@ class DemoActivity : AppCompatActivity() {
         }
     }
 
-    private suspend fun getClient(model: File, dfmLoader: DfmLoader): InferenceClient {
-        return if (model.isDirectory) {
+    private suspend fun getClient(model: File, dfmLoader: DfmLoader, bypass: Boolean): InferenceClient {
+        if (model.isDirectory) {
             if (!ortDfmReady) {
                 ortDfmReady = dfmLoader.ensureDfm("ort")
                 dfmLoader.loadNativeLibs("ort")
             }
-            dfmLoader.getInferenceClient("ort", model)
+            return dfmLoader.getInferenceClient("ort", model)
         } else {
-            InferenceClient { _, _ -> "(MediaPipe .task not yet DFM-ready; stub)" }
-        }
-    }
-
-    private suspend fun getBypassClient(model: File, dfmLoader: DfmLoader): InferenceClient {
-        return if (model.isDirectory) {
-            if (!ortDfmReady) {
-                ortDfmReady = dfmLoader.ensureDfm("ort")
-                dfmLoader.loadNativeLibs("ort")
+            if (!litertDfmReady) {
+                litertDfmReady = dfmLoader.ensureDfm("litert")
+                dfmLoader.loadNativeLibs("litert")
             }
-            dfmLoader.getInferenceClient("ort", model)
-        } else {
-            InferenceClient { _, _ -> "(MediaPipe .task not yet DFM-ready; stub)" }
+            return dfmLoader.getInferenceClient("litert", model)
         }
     }
 
@@ -265,7 +252,7 @@ class DemoActivity : AppCompatActivity() {
     private fun refreshModelStatus(modelStatus: TextView) {
         val picked = pickLocalModel()
         modelStatus.text = if (picked == null) {
-            "Local model: none. Tap Download (no token needed) or adb push a GenAI folder into files/ort-models/."
+            "Local model: none. Tap Download (no token needed) or adb push a model."
         } else if (picked.isDirectory) {
             "Local model: ${picked.name}/ (ORT GenAI native)"
         } else {
@@ -277,6 +264,5 @@ class DemoActivity : AppCompatActivity() {
         localClient?.let { runCatching { it.close() } }
         localClient = null
         localEngine = null
-        localModelPath = null
     }
 }
