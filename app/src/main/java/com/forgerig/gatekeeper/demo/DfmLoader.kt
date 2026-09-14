@@ -71,7 +71,10 @@ class DfmLoader(private val context: Context) {
                 val release = latest ?: return@withContext false
                 val downloadUrl = release.assets.firstOrNull { it.name == asset }?.browser_download_url
                     ?: throw IOException("DFM asset $asset not found in release ${release.tag_name}")
-                if (dfmBackendDir.exists()) dfmBackendDir.deleteRecursively()
+                if (dfmBackendDir.exists()) {
+                    makeWritable(dfmBackendDir)
+                    dfmBackendDir.deleteRecursively()
+                }
                 dfmBackendDir.mkdirs()
                 val zipFile = File(context.cacheDir, asset)
                 Log.i(tag, "Downloading DFM $asset from release ${release.tag_name}")
@@ -81,6 +84,7 @@ class DfmLoader(private val context: Context) {
                 if (!classesJar.exists()) {
                     throw IOException("DFM $asset did not contain classes.jar")
                 }
+                makeReadOnly(dfmBackendDir)
                 writeMetadata(dfmBackendDir, DfmMetadata(release.tag_name, asset))
                 true
             } catch (e: Exception) {
@@ -96,6 +100,7 @@ class DfmLoader(private val context: Context) {
         if (!classesJar.exists()) {
             throw IllegalStateException("DFM not present for $backend")
         }
+        makeReadOnly(dfmBackendDir)
         val optimizedDir = File(context.filesDir, "dex/$backend")
         optimizedDir.mkdirs()
         val jniDir = File(dfmBackendDir, "jni/arm64-v8a")
@@ -163,6 +168,30 @@ class DfmLoader(private val context: Context) {
 
     private fun metadataFile(dfmBackendDir: File): File {
         return File(dfmBackendDir, "dfm.json")
+    }
+
+    private fun makeReadOnly(dfmBackendDir: File) {
+        runCatching {
+            dfmBackendDir.walkTopDown().forEach { file ->
+                if (file.isDirectory) {
+                    file.setReadable(true, false)
+                    file.setExecutable(true, false)
+                    file.setWritable(false, false)
+                } else {
+                    file.setReadable(true, false)
+                    file.setExecutable(false, false)
+                    file.setWritable(false, false)
+                }
+            }
+        }
+    }
+
+    private fun makeWritable(dfmBackendDir: File) {
+        runCatching {
+            dfmBackendDir.walkTopDown().forEach { file ->
+                file.setWritable(true, true)
+            }
+        }
     }
 
     private fun readMetadata(dfmBackendDir: File): DfmMetadata? {

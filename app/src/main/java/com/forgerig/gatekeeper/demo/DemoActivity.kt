@@ -19,6 +19,7 @@ import com.forgerig.gatekeeper.model.GatekeeperConfig
 import com.forgerig.gatekeeper.model.GatekeeperResult
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.IOException
 
 class DemoActivity : ComponentActivity() {
 
@@ -152,7 +153,7 @@ class DemoActivity : ComponentActivity() {
                     val bypass = bypassSwitch.isChecked
                     val dfmLoader = DfmLoader(this@DemoActivity)
                     closeLocalEngine()
-                    val client = getClient(model, dfmLoader)
+                    val client = getClient(model, dfmLoader, dfmStatus)
 
                     if (bypass) {
                         try {
@@ -179,12 +180,21 @@ class DemoActivity : ComponentActivity() {
         }
     }
 
-    private suspend fun getClient(model: File, dfmLoader: DfmLoader): InferenceClient {
+    private suspend fun getClient(
+        model: File,
+        dfmLoader: DfmLoader,
+        dfmStatus: TextView
+    ): InferenceClient {
         if (model.isDirectory) {
-            if (!ortDfmReady) {
-                ortDfmReady = dfmLoader.ensureDfm("ort")
-                dfmLoader.loadNativeLibs("ort")
+            dfmStatus.text = "Checking ORT backend…"
+            val ok = dfmLoader.ensureDfm("ort")
+            ortDfmReady = ok
+            if (!ok) {
+                dfmStatus.text = "ORT backend download failed — check connection and retry."
+                throw IOException("ORT backend DFM could not be downloaded")
             }
+            dfmLoader.loadNativeLibs("ort")
+            dfmStatus.text = "ORT backend ready."
             return dfmLoader.getInferenceClient("ort", model)
         } else {
             return MediaPipeLlmClient(applicationContext, model)
