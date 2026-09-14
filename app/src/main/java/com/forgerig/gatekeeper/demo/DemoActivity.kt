@@ -200,8 +200,9 @@ class DemoActivity : Activity() {
             val ok = dfmLoader.ensureDfm("ort")
             ortDfmReady = ok
             if (!ok) {
-                dfmStatus.text = "ORT backend download failed — check connection and retry."
-                throw IOException("ORT backend DFM could not be downloaded")
+                val cause = dfmLoader.lastError ?: "unknown error"
+                dfmStatus.text = "ORT backend download failed ($cause) — check connection and retry."
+                throw IOException("ORT backend DFM could not be downloaded: $cause")
             }
             dfmLoader.loadNativeLibs("ort")
             dfmStatus.text = "ORT backend ready."
@@ -211,8 +212,9 @@ class DemoActivity : Activity() {
             val ok = dfmLoader.ensureDfm("litert")
             litertDfmReady = ok
             if (!ok) {
-                dfmStatus.text = "MediaPipe backend download failed — check connection and retry."
-                throw IOException("MediaPipe backend DFM could not be downloaded")
+                val cause = dfmLoader.lastError ?: "unknown error"
+                dfmStatus.text = "MediaPipe backend download failed ($cause) — check connection and retry."
+                throw IOException("MediaPipe backend DFM could not be downloaded: $cause")
             }
             dfmLoader.loadNativeLibs("litert")
             dfmStatus.text = "MediaPipe backend ready."
