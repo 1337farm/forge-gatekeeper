@@ -58,9 +58,17 @@ class DownloadService : Service() {
         scope.launch {
             val nm = getSystemService(NotificationManager::class.java)
             startForeground(id, progressNotification(title, -1, -1), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            var lastSent = 0L
             try {
                 val detail = block { done, total ->
-                    nm.notify(id, progressNotification(title, done, total))
+                    // The downloader emits per-buffer; batch to ~1/s so the UI
+                    // thread is not spammed with hundreds of sticky intents/renders.
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (done >= total || now - lastSent >= 750) {
+                        lastSent = now
+                        sendProgress(kind, done, total)
+                        nm.notify(id, progressNotification(title, done, total))
+                    }
                 }
                 nm.notify(id, doneNotification(title, true, detail))
                 broadcast(kind, true, detail)
@@ -136,14 +144,27 @@ class DownloadService : Service() {
         )
     }
 
+    private fun sendProgress(kind: String, done: Long, total: Long) {
+        sendBroadcast(
+            Intent(ACTION_PROGRESS)
+                .setPackage(packageName)
+                .putExtra(EXTRA_KIND, kind)
+                .putExtra(EXTRA_DONE, done)
+                .putExtra(EXTRA_TOTAL, total)
+        )
+    }
+
     companion object {
         const val ACTION_MODEL = "com.forgerig.gatekeeper.demo.action.MODEL"
         const val ACTION_DONE = "com.forgerig.gatekeeper.demo.action.DONE"
+        const val ACTION_PROGRESS = "com.forgerig.gatekeeper.demo.action.PROGRESS"
         const val EXTRA_SPEC = "spec"
         const val EXTRA_TOKEN = "token"
         const val EXTRA_KIND = "kind"
         const val EXTRA_OK = "ok"
         const val EXTRA_MESSAGE = "message"
+        const val EXTRA_DONE = "done"
+        const val EXTRA_TOTAL = "total"
         const val KIND_MODEL = "model"
         private const val CHANNEL = "downloads"
 
