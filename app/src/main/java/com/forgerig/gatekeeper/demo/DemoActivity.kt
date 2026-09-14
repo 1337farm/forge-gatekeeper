@@ -73,6 +73,7 @@ class DemoActivity : Activity() {
         modelUrl.setText(ModelDownloader.DEFAULT_ORT_REF)
         refreshModelStatus(modelStatus)
         checkForUpdate(updateStatus)
+        maybeAutoDownloadModel(modelStatus, downloadProgress, downloadButton)
 
         downloadButton.setOnClickListener {
             val spec = modelUrl.text.toString().trim()
@@ -89,19 +90,37 @@ class DemoActivity : Activity() {
 
         downloadReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    DownloadService.ACTION_PROGRESS -> {
+                        val done = intent.getLongExtra(DownloadService.EXTRA_DONE, -1)
+                        val total = intent.getLongExtra(DownloadService.EXTRA_TOTAL, -1)
+                        if (done >= 0 && total > 0) {
+                            downloadProgress.visibility = View.VISIBLE
+                            downloadProgress.isIndeterminate = false
+                            downloadProgress.progress =
+                                ((done * 100) / total).toInt().coerceIn(0, 100)
+                            val downloaded = done / 1_048_576
+                            val expected = total / 1_048_576
+                            modelStatus.text =
+                                if (done >= total) "Finalizing model…"
+                                else "Downloading model: $downloaded / $expected MB"
+                        }
+                        return
+                    }
+                    DownloadService.ACTION_DONE -> Unit
+                    else -> return
+                }
                 val kind = intent.getStringExtra(DownloadService.EXTRA_KIND).orEmpty()
                 val ok = intent.getBooleanExtra(DownloadService.EXTRA_OK, false)
                 val message = intent.getStringExtra(DownloadService.EXTRA_MESSAGE).orEmpty()
-                when {
-                    kind == DownloadService.KIND_MODEL -> {
-                        downloadButton.isEnabled = true
-                        downloadProgress.visibility = View.GONE
-                        downloadProgress.isIndeterminate = false
-                        closeLocalEngine()
-                        refreshModelStatus(modelStatus)
-                        modelStatus.text = if (ok) "Model ready: $message" else "Download failed: $message"
-                        if (ok) Toast.makeText(this@DemoActivity, "Model ready.", Toast.LENGTH_SHORT).show()
-                    }
+                if (kind == DownloadService.KIND_MODEL) {
+                    downloadButton.isEnabled = true
+                    downloadProgress.visibility = View.GONE
+                    downloadProgress.isIndeterminate = false
+                    closeLocalEngine()
+                    refreshModelStatus(modelStatus)
+                    modelStatus.text = if (ok) "Model ready: $message" else "Download failed: $message"
+                    if (ok) Toast.makeText(this@DemoActivity, "Model ready.", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -138,13 +157,16 @@ class DemoActivity : Activity() {
             telemetryView.text = ""
             scope.launch {
                 try {
-                    val model = pickLocalModel()
-                    if (model == null) {
+                    val bypass = bypassSwitch.isChecked
+                    val freshModel = pickLocalModel()
+                    if (freshModel == null) {
+                        downloadProgress.visibility = View.GONE
+                        downloadProgress.isIndeterminate = false
                         statusView.text = "No local model — tap Download (no token needed) or adb push a folder."
                         return@launch
                     }
+                    val model = freshModel
                     val mode = if (model.isDirectory) "[ORT native] " else "[MediaPipe] "
-                    val bypass = bypassSwitch.isChecked
                     closeLocalEngine()
                     val client = getClient(model)
 
@@ -216,7 +238,9 @@ class DemoActivity : Activity() {
     override fun onStart() {
         super.onStart()
         downloadReceiver?.let {
-            registerReceiver(it, IntentFilter(DownloadService.ACTION_DONE), RECEIVER_NOT_EXPORTED)
+            val filter = IntentFilter(DownloadService.ACTION_DONE)
+            filter.addAction(DownloadService.ACTION_PROGRESS)
+            registerReceiver(it, filter, RECEIVER_NOT_EXPORTED)
         }
     }
 
@@ -253,6 +277,22 @@ class DemoActivity : Activity() {
             }
         }
     }
+
+    private fun maybeAutoDownloadModel(
+        modelStatus: TextView,
+        downloadProgress: ProgressBar,
+        downloadButton: Button
+    ) {
+        if (pickLocalModel() != null) return
+        downloadButton.isEnabled = false
+        downloadProgress.visibility = View.VISIBLE
+        downloadProgress.isIndeterminate = true
+        modelStatus.text = "No model on disk yet — downloading the default model…"
+        DownloadService.startModelDownload(this, ModelDownloader.DEFAULT_ORT_REF, hfTokenValue())
+    }
+
+    private fun hfTokenValue(): String =
+        runCatching { findViewById<EditText>(R.id.hfToken).text.toString() }.getOrDefault("")
 
     private fun pickLocalModel(): File? {
         val ortRoot = File(filesDir, "ort-models")

@@ -227,9 +227,19 @@ Java_com_forgerig_gatekeeper_ort_LlmBridge_nativeGenerate(JNIEnv* env, jobject /
     CheckOga("OgaCreateGeneratorParams",
              OgaCreateGeneratorParams(engine->model, &params));
     const int cap = max_new_tokens > 0 ? max_new_tokens : kDefaultMaxNewTokens;
-    // max_length bounds prompt + completion; the loop below enforces the cap.
-    CheckOga("OgaGeneratorParamsSetSearchNumber",
-             OgaGeneratorParamsSetSearchNumber(params, "max_length", 8192.0));
+    {
+      // No model-side context_length getter exists here, so bound the
+      // window conservatively: the fixed 8192 default above it died on
+      // 4k-context models (Phi-3-mini: max_length 8192 > context_length
+      // 4096). The generation loop below still enforces the caller's cap;
+      // larger-window models simply run with a headroom-limited max_length.
+      constexpr double kWindow = 4096.0;
+      double total = static_cast<double>(cap) + 512.0;  // prompt headroom
+      double length = total < 256.0 ? 256.0 : total;
+      if (length > kWindow) length = kWindow;
+      CheckOga("OgaGeneratorParamsSetSearchNumber",
+               OgaGeneratorParamsSetSearchNumber(params, "max_length", length));
+    }
 
     CheckOga("OgaCreateGenerator", OgaCreateGenerator(engine->model, params, &generator));
     CheckOga("OgaGenerator_AppendTokenSequences",
