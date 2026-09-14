@@ -217,7 +217,6 @@ jobs:
           [ -n "$ORT_AAR" ] || { echo "ERROR: no gatekeeper-ort-release.aar to publish"; exit 1; }
           [ -n "$APK" ] || { echo "ERROR: no app-release.apk to publish"; exit 1; }
           [ -f gatekeeper-ort-dfm.zip ] || { echo "ERROR: no gatekeeper-ort-dfm.zip to publish"; exit 1; }
-          [ -f gatekeeper-litert-dfm.zip ] || { echo "ERROR: no gatekeeper-litert-dfm.zip to publish"; exit 1; }
           for chunk in gatekeeper-ort-classes.zip gatekeeper-ort-jni.zip gatekeeper-litert-classes.zip tasks-genai-classes.zip tasks-genai-jni.zip guava-classes.zip protobuf-javalite-classes.zip dfm-chunks.json; do
             [ -f "$chunk" ] || { echo "ERROR: no $chunk to publish"; exit 1; }
           done
@@ -227,18 +226,16 @@ jobs:
           ORT_NAME="gatekeeper-ort-$SHA.aar"
           APK_NAME="gatekeeper-demo-$SHA.apk"
           DFM_NAME="gatekeeper-ort-dfm.zip"
-          LITERT_DFM_NAME="gatekeeper-litert-dfm.zip"
           CHUNKS="gatekeeper-ort-classes.zip gatekeeper-ort-jni.zip gatekeeper-litert-classes.zip tasks-genai-classes.zip tasks-genai-jni.zip guava-classes.zip protobuf-javalite-classes.zip dfm-chunks.json"
           cp "$AAR" "$OUT/$AAR_NAME"
           cp "$LITERT_AAR" "$OUT/$LITERT_NAME"
           cp "$ORT_AAR" "$OUT/$ORT_NAME"
           cp "$APK" "$OUT/$APK_NAME"
           cp "gatekeeper-ort-dfm.zip" "$OUT/$DFM_NAME"
-          cp "gatekeeper-litert-dfm.zip" "$OUT/$LITERT_DFM_NAME"
           for chunk in $CHUNKS; do cp "$chunk" "$OUT/$chunk"; done
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           sum() { sha256sum "$1" | cut -d' ' -f1; }
-          NAMES="$AAR_NAME $LITERT_NAME $ORT_NAME $APK_NAME $DFM_NAME $LITERT_DFM_NAME $CHUNKS"
+          NAMES="$AAR_NAME $LITERT_NAME $ORT_NAME $APK_NAME $DFM_NAME $CHUNKS"
           PAIRS=""
           for n in $NAMES; do
             PAIRS="$PAIRS\"$n\":\"$(sum "$OUT/$n")\","
