@@ -2,8 +2,7 @@ package com.forgerig.gatekeeper.demo
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
+import org.json.JSONArray
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -199,19 +198,15 @@ object ModelDownloader {
         if (!part.renameTo(dest)) throw IOException("Cannot finalize ${dest.name}")
     }
 
-    @Serializable
     private data class HfTreeEntry(
         val type: String = "",
         val path: String = "",
         val size: Long = 0,
-        val lfs: HfLfs? = null
+        val lfsSize: Long = 0
     ) {
         fun fileName() = path.substringAfterLast('/')
-        fun byteSizeCoalesced(): Long = (lfs?.size ?: size).let { if (it <= 0) 0 else it }
+        fun byteSizeCoalesced(): Long = if (lfsSize > 0) lfsSize else size.coerceAtLeast(0)
     }
-
-    @Serializable
-    private data class HfLfs(val size: Long = 0)
 
     // Public tree API: for public repos it answers with no credentials. Only
     // inference-relevant files are kept (ORT GenAI needs genai_config.json,
@@ -227,7 +222,16 @@ object ModelDownloader {
         }
         val body = conn.inputStream.bufferedReader().use { it.readText() }
         val entries = try {
-            Json { ignoreUnknownKeys = true }.decodeFromString<List<HfTreeEntry>>(body)
+            val array = JSONArray(body)
+            List(array.length()) { i ->
+                val o = array.getJSONObject(i)
+                HfTreeEntry(
+                    type = o.optString("type"),
+                    path = o.optString("path"),
+                    size = o.optLong("size"),
+                    lfsSize = o.optJSONObject("lfs")?.optLong("size") ?: 0
+                )
+            }
         } catch (e: Exception) {
             throw IOException("Cannot parse Hugging Face file listing: ${e.message}", e)
         }

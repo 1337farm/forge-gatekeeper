@@ -64,12 +64,11 @@ No local SDK needed — cloud runners build the APK.
 1. On your phone, open
    `github.com/1337farm/forge-gatekeeper/releases/tag/latest`
    or pull the `ForgeGatekeeper-Demo-APK` artifact from any green CI run.
-2. Download **`gatekeeper-demo-<sha>.apk`** (~55MB) and install it as a single APK.
-   This is a minimal bootstrap: it contains the core GatekeeperEngine and the
-   MediaPipe backend. The bare-metal ORT native backend is a **Dynamic Feature
-   Module (DFM)** published per release — the app downloads it from GitHub on
-   demand when you pick the ORT path (see *Dynamic feature modules* below),
-   rather than shipping it inside the single APK.
+2. Download **`gatekeeper-demo-<sha>.apk`** and install it as a single APK.
+   This is a minimal bootstrap shell: the core GatekeeperEngine plus a
+   downloader. Both inference backends are fetched on demand as
+   hash-verified chunks (see *Dynamic feature modules* below), so the APK
+   itself stays tiny.
 3. Open **Gatekeeper Demo** (allow "unknown apps" once, if installing by hand).
 4. Try these:
    - Fluffy prompt: `Hi there, could you kindly summarize...` → SUCCESS
@@ -83,20 +82,31 @@ No local SDK needed — cloud runners build the APK.
 
 ### Dynamic feature modules (DFM) from GitHub
 
-Instead of a split APK pair, the demo ships optional backends lazily:
+Instead of a split APK pair, the demo fetches each backend as separate
+hash-verified chunks, one per upstream artifact:
 
-- When you select the ORT backend, the app downloads the latest `gatekeeper-ort`
-  DFM ZIP from the `latest` GitHub release (`gatekeeper-ort-dfm.zip`)
-  — it carries the `OrtGenAiClient` classes + `libonnxruntime.so`,
-  `libonnxruntime-genai.so`, `libllm_engine.so`. The zip is cached in
-  `files/dfms/` and only re-downloaded when a newer release is detected.
-- The MediaPipe `.task` path is always bundled in the single APK (it only needs
-  the Maven `tasks-genai` artifact), so no extra DFM is required for it.
+- **ORT backend (`ort`):** `gatekeeper-ort-classes.zip` (`OrtGenAiClient` +
+  JNI bridge) and `gatekeeper-ort-jni.zip` (`libonnxruntime.so`,
+  `libonnxruntime-genai.so`, `libllm_engine.so`).
+- **MediaPipe backend (`litert`):** `gatekeeper-litert-classes.zip`
+  (`MediaPipeLlmClient`), `tasks-genai-classes.zip`,
+  `tasks-genai-jni.zip`, `guava-classes.zip`, and
+  `protobuf-javalite-classes.zip`.
 
-To ship a new ORT DFM, upload `gatekeeper-ort-dfm.zip` (build it from the
-`:gatekeeper-ort` output AAR by unzipping and bundling `classes.jar` + `jni/`)
-as an additional asset on the `latest` release; the demo's Download ORT backend
-(DFM) action will auto-pull it the next time.
+The `latest` GitHub release carries a `dfm-chunks.json` manifest listing
+every chunk with its SHA-256. The app downloads only chunks that are missing
+or whose hash changed, verifies each one, and caches them in `files/dfms/`.
+Native libraries ship inside the `*-jni.zip` chunks, so a native rev never
+forces a re-download of the classes chunks.
+
+All downloads (models and backend chunks) run in a foreground service with a
+progress notification, so they keep going when the app is backgrounded. The
+app also reads `aar-manifest.json` from the `latest` release on launch and
+offers a one-tap link to the release page when a newer build is published.
+
+To ship new chunks, CI rebuilds them from the `:gatekeeper-ort` /
+`:gatekeeper-litert` outputs on every green `main` build and uploads them
+alongside `dfm-chunks.json` on the `latest` release.
 
 The monolith APK carries `versionCode = 5_000_001`, bumped once to migrate off
 the retired split-APK lineage (old base/runtime splits carried `5_000_000`), so

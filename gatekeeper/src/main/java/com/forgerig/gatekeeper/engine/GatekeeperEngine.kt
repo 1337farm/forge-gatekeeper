@@ -11,7 +11,6 @@ import com.forgerig.gatekeeper.model.GatekeeperStep
 import com.forgerig.gatekeeper.model.HeatLevel
 import com.forgerig.gatekeeper.model.InjectionVerdict
 import com.forgerig.gatekeeper.model.StageAPayload
-import com.forgerig.gatekeeper.model.StageDPayload
 import com.forgerig.gatekeeper.model.StepExecutionRecord
 import com.forgerig.gatekeeper.model.ExecutionTelemetry
 import com.forgerig.gatekeeper.model.StepStatus
@@ -21,7 +20,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeout
-import kotlinx.serialization.json.Json
+import org.json.JSONArray
+import org.json.JSONObject
 
 fun interface HardwareEvaluator {
     fun evaluate(ctx: Context, config: GatekeeperConfig): HardwareVerdict
@@ -32,8 +32,7 @@ class GatekeeperEngine(
     private val inference: InferenceClient,
     private val hardwareEvaluator: HardwareEvaluator = HardwareEvaluator { ctx, cfg ->
         HardwareCapabilityEngine.evaluate(ctx, cfg.minRamBytes)
-    },
-    private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true }
+    }
 ) {
     private val npuMutex = Mutex()
     private val tag = "ForgeGatekeeper"
@@ -119,7 +118,7 @@ class GatekeeperEngine(
         val s3 = System.currentTimeMillis()
         val stageA: StageAPayload = try {
             val raw = guardedInference(SystemPrompts.securityPrompt(), sanitized, config, breaker)
-            json.decodeFromString(StageAPayload.serializer(), extractJson(raw))
+            parseStageA(extractJson(raw))
         } catch (e: TimeoutCancellationException) {
             breaker.recordFailure()
             rec(GatekeeperStep.STAGE_A_SECURITY_EVAL, StepStatus.FAILED, "NPU timeout")
@@ -349,9 +348,33 @@ class GatekeeperEngine(
     }
 
     internal fun parseAudit(raw: String): AccuracyAuditResult {
-        val p = json.decodeFromString(StageDPayload.serializer(), extractJson(raw))
-        return if (p.status.equals("MATCH", true)) AccuracyAuditResult.Match(p.drift_score)
-        else AccuracyAuditResult.Mismatch(p.drift_score, p.dropped_constraints, p.hallucinations, p.corrective_feedback)
+        val p = JSONObject(extractJson(raw))
+        val status = p.optString("status")
+        val drift = p.optDouble("drift_score")
+        return if (status.equals("MATCH", true)) AccuracyAuditResult.Match(drift)
+        else AccuracyAuditResult.Mismatch(
+            drift,
+            p.optStringList("dropped_constraints"),
+            p.optStringList("hallucinations"),
+            p.optString("corrective_feedback")
+        )
+    }
+
+    internal fun parseStageA(raw: String): StageAPayload {
+        val p = JSONObject(raw)
+        return StageAPayload(
+            heat = p.getString("heat"),
+            injection = p.getString("injection"),
+            injection_reason = p.optString("injection_reason"),
+            ambient_pii = p.optStringList("ambient_pii"),
+            completeness = p.optString("completeness", "READY"),
+            missing_context = p.optString("missing_context")
+        )
+    }
+
+    private fun JSONObject.optStringList(key: String): List<String> {
+        val arr: JSONArray = optJSONArray(key) ?: return emptyList()
+        return List(arr.length()) { i -> arr.getString(i) }
     }
 
     internal fun extractJson(raw: String): String {

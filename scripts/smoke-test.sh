@@ -33,8 +33,8 @@ done
 echo "ORT natives present (llm_engine + onnxruntime + onnxruntime-genai)"
 
 echo "==> demo APK checks (arm64-only natives)"
-./gradlew :app:assembleDebug --stacktrace
-APP_APK="$(find app/build/outputs/apk/debug -name '*.apk' | head -1)"
+./gradlew :app:assembleRelease --stacktrace
+APP_APK="$(find app/build/outputs/apk/release -name '*.apk' | head -1)"
 [ -n "$APP_APK" ] || { echo "ERROR: demo APK not built"; exit 1; }
 unzip -l "$APP_APK" 'lib/*' | grep -qE 'lib/(x86|x86_64|armeabi)/' && {
   echo "ERROR: non-arm64 native ABI leaked into demo APK"; exit 1; }

@@ -4,8 +4,6 @@ import android.util.Log
 import com.forgerig.gatekeeper.engine.GatekeeperEngine
 import com.forgerig.gatekeeper.model.GatekeeperConfig
 import com.forgerig.gatekeeper.model.GatekeeperResult
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 
 interface CloudLlmGateway {
     suspend fun generate(prompt: String): String
@@ -13,8 +11,7 @@ interface CloudLlmGateway {
 
 class ForgeRigAgentRouter(
     private val gatekeeper: GatekeeperEngine,
-    private val cloudLlm: CloudLlmGateway,
-    private val json: Json = Json { prettyPrint = true }
+    private val cloudLlm: CloudLlmGateway
 ) {
     suspend fun dispatch(userPrompt: String, config: GatekeeperConfig = GatekeeperConfig()): String {
         return when (val r = gatekeeper.processPrompt(userPrompt, config)) {
@@ -25,7 +22,7 @@ class ForgeRigAgentRouter(
                         "pre=${r.telemetry.preCompressionTokens} post=${r.telemetry.postCompressionTokens} " +
                         "iters=${r.telemetry.compressionIterations}"
                 )
-                Log.d("ForgeRig", "ledger=${json.encodeToString(r.telemetry)}")
+                Log.d("ForgeRig", "ledger=$r.telemetry")
                 cloudLlm.generate(r.safeCompressedPrompt)
             }
             is GatekeeperResult.Blocked -> {
@@ -34,7 +31,7 @@ class ForgeRigAgentRouter(
             }
             is GatekeeperResult.FallbackRequired -> {
                 Log.w("ForgeRig", "GATEKEEPER fallback: ${r.reason}")
-                Log.d("ForgeRig", "ledger=${json.encodeToString(r.telemetry)}")
+                Log.d("ForgeRig", "ledger=$r.telemetry")
                 cloudLlm.generate(r.sanitizedPrompt)
             }
         }

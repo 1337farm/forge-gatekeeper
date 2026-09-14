@@ -1,7 +1,6 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.serialization")
 }
 
 android {
@@ -20,13 +19,12 @@ android {
         // Human-readable: the committing SHA beats a constant for debugging.
         versionName = System.getenv("GITHUB_SHA")?.take(10) ?: "1.0"
         ndk {
-            // Demo runs on arm64-v8a phones only. Pruning the x86/x86_64/
-            // armeabi-v7a ABIs MediaPipe tasks-genai ships kills ~82MB of
-            // dead weight from the uploaded APK.
+            // Demo runs on arm64-v8a phones only: a single ABI keeps the
+            // monolith shell small.
             abiFilters += setOf("arm64-v8a")
         }
-        // Single-language resources: drops non-English translations bundled
-        // by AndroidX/MediaPipe, shrinking the monolith APK further.
+        // Single-language resources: drops non-English translations, shrinking
+        // the monolith shell further.
         resourceConfigurations += "en"
     }
 
@@ -66,7 +64,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -93,11 +92,6 @@ android {
 
 dependencies {
     implementation(project(":gatekeeper"))
-    implementation(project(":gatekeeper-litert"))
-    implementation("androidx.activity:activity:1.9.3")
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     testImplementation("junit:junit:4.13.2")
