@@ -14,10 +14,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.forgerig.gatekeeper.engine.GatekeeperEngine
 import com.forgerig.gatekeeper.engine.InferenceClient
-import com.forgerig.gatekeeper.litert.MediaPipeLlmClient
-import com.forgerig.gatekeeper.litert.ModelStore
-import com.forgerig.gatekeeper.ort.OrtGenAiClient
-import com.forgerig.gatekeeper.ort.OrtModelDir
 import com.forgerig.gatekeeper.model.GatekeeperConfig
 import com.forgerig.gatekeeper.model.GatekeeperResult
 import kotlinx.coroutines.launch
@@ -27,10 +23,9 @@ class DemoActivity : AppCompatActivity() {
 
     private var localEngine: GatekeeperEngine? = null
     private var localClient: AutoCloseable? = null
-    private var localModelPath: String? = null
+    private var localModelPath: File? = null
+    private var ortDfmReady = false
 
-    // One-line device capability snapshot so fallbacks are self-diagnosing
-    // (API level + total RAM; the gatekeeper only needs memory headroom).
     private fun capabilityLine(): String {
         val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
         val mi = android.app.ActivityManager.MemoryInfo()
@@ -50,19 +45,24 @@ class DemoActivity : AppCompatActivity() {
         val statusView = findViewById<TextView>(R.id.statusView)
         val outputView = findViewById<TextView>(R.id.outputView)
         val telemetryView = findViewById<TextView>(R.id.telemetryView)
-        val ortDemoButton = findViewById<Button>(R.id.ortDemoButton)
-        ortDemoButton.setOnClickListener {
-            startActivity(android.content.Intent(this, MainActivity::class.java))
-        }
+        val downloadDFMButton = findViewById<Button>(R.id.downloadDFMButton)
+        val dfmStatus = findViewById<TextView>(R.id.dfmStatus)
         val bypassSwitch = findViewById<Switch>(R.id.bypassGatekeeper)
-        ortDemoButton.setOnClickListener {
-            startActivity(android.content.Intent(this, MainActivity::class.java))
-        }
         val modelUrl = findViewById<EditText>(R.id.modelUrl)
-        val hfToken = findViewById<EditText>(R.id.hfToken)
         val downloadButton = findViewById<Button>(R.id.downloadButton)
         val downloadProgress = findViewById<ProgressBar>(R.id.downloadProgress)
         val modelStatus = findViewById<TextView>(R.id.modelStatus)
+
+        downloadDFMButton.setOnClickListener {
+            lifecycleScope.launch {
+                downloadDFMButton.isEnabled = false
+                dfmStatus.text = "Downloading ORT backend DFM…"
+                val ok = DfmLoader(this@DemoActivity).ensureDfm("ort")
+                ortDfmReady = ok
+                dfmStatus.text = if (ok) "ORT backend ready." else "ORT download failed."
+                downloadDFMButton.isEnabled = true
+            }
+        }
 
         modelUrl.setText(ModelDownloader.DEFAULT_ORT_REF)
         refreshModelStatus(modelStatus)
@@ -84,29 +84,25 @@ class DemoActivity : AppCompatActivity() {
                         val fileName = spec.substringAfterLast('/').substringBefore('?')
                             .takeIf { it.endsWith(".task", ignoreCase = true) }
                             ?: ModelDownloader.DEFAULT_MODEL_FILE
-                        val dest = ModelStore.defaultModelFile(filesDir, fileName)
+                        val dest = File(filesDir, "models").let { File(it, fileName) }
                         modelStatus.text = "Downloading $fileName…"
                         ModelDownloader.download(spec, token, dest) { done, total ->
                             runOnUiThread { report(done, total, modelStatus, downloadProgress) }
                         }
                     } else {
                         val ref = ModelDownloader.parseRepoRef(spec)
-                        val dir = File(
-                            File(filesDir, "ort-models"),
-                            ref.repo.substringAfterLast('/').take(40)
-                        )
+                        val dir = File(filesDir, "ort-models")
+                            .let { File(it, ref.repo.substringAfterLast('/').take(40)) }
                         modelStatus.text = "Downloading ${ref.repo}${ref.subfolder?.let { "/$it" } ?: ""}…"
                         ModelDownloader.downloadOrtFolder(ref, dir) { done, total ->
                             runOnUiThread { report(done, total, modelStatus, downloadProgress) }
                         }
                     }
-                    // Fresh files: drop any cached client bound to the old ones.
                     closeLocalEngine()
                     refreshModelStatus(modelStatus)
                     Toast.makeText(this@DemoActivity, "Model ready.", Toast.LENGTH_SHORT).show()
                 } catch (t: Throwable) {
-                    modelStatus.text = "Download failed: ${t.message} " +
-                            "— tap Download again to resume from where it stopped."
+                    modelStatus.text = "Download failed: ${t.message} — tap Download again to resume."
                 } finally {
                     downloadButton.isEnabled = true
                     downloadProgress.visibility = View.GONE
@@ -117,8 +113,6 @@ class DemoActivity : AppCompatActivity() {
         val caps = capabilityLine()
         statusView.text = "$caps\nIdle."
 
-        // Copies the full on-screen report (caps + status + output + telemetry)
-        // so fallback/error diagnoses survive — never the raw input.
         copyButton.setOnClickListener {
             val status = statusView.text.toString()
             val output = outputView.text.toString()
@@ -148,38 +142,64 @@ class DemoActivity : AppCompatActivity() {
             telemetryView.text = ""
             lifecycleScope.launch {
                 try {
-                    val picked = pickLocalModel()
-                    if (picked == null) {
-                        statusView.text = "No local model — hit Download above " +
-                            "(defaults to a tokenless public ORT model) or adb push a folder."
-return@launch
-            }
-            // Bypass gatekeeper pipeline if requested
-            val bypass = bypassSwitch.isChecked
-            if (bypass) {
-                val client: InferenceClient = if (picked.isDirectory) {
-                    OrtGenAiClient(applicationContext, picked)
-                } else {
-                    MediaPipeLlmClient(applicationContext, picked)
-                }
-                localClient = client as AutoCloseable
-                val rawResult = client.generate("", raw)
-                val mode = if (picked.isDirectory) "[ORT native] " else "[MediaPipe] "
-                statusView.text = "$mode RAW (gatekeeper bypassed)"
-                outputView.text = rawResult
-                telemetryView.text = "Gatekeeper pipeline bypassed — no sanitization, redaction, compression, or audit."
-            } else {
-                val engine = localEngineFor(picked)
-                val mode = if (picked.isDirectory) "[ORT native] " else "[MediaPipe] "
-                val result = engine.processPrompt(raw, GatekeeperConfig())
-                render(result, statusView, outputView, telemetryView, mode)
-            }
+                    val model = pickLocalModel()
+                    if (model == null) {
+                        statusView.text = "No local model — tap Download (no token needed) or adb push a folder."
+                        return@launch
+                    }
+                    val mode = if (model.isDirectory) "[ORT native] " else "[MediaPipe] "
+                    val bypass = bypassSwitch.isChecked
+                    val dfmLoader = DfmLoader(this@DemoActivity)
+
+                    val engine = if (bypass) {
+                        val client = getBypassClient(model, dfmLoader)
+                        localClient = client as AutoCloseable
+                        GatekeeperEngine(applicationContext, client)
+                    } else {
+                        val client = getClient(model, dfmLoader)
+                        localClient = client as AutoCloseable
+                        GatekeeperEngine(applicationContext, client)
+                    }
+                    localEngine = engine
+                    localModelPath = model
+
+                    if (bypass) {
+                        val result = engine.processPrompt(raw, GatekeeperConfig())
+                        render(result, statusView, outputView, telemetryView, mode)
+                    } else {
+                        val result = engine.processPrompt(raw, GatekeeperConfig())
+                        render(result, statusView, outputView, telemetryView, mode)
+                    }
                 } catch (t: Throwable) {
                     statusView.text = "Error: ${t.message}"
                 } finally {
                     runButton.isEnabled = true
                 }
             }
+        }
+    }
+
+    private suspend fun getClient(model: File, dfmLoader: DfmLoader): InferenceClient {
+        return if (model.isDirectory) {
+            if (!ortDfmReady) {
+                ortDfmReady = dfmLoader.ensureDfm("ort")
+                dfmLoader.loadNativeLibs("ort")
+            }
+            dfmLoader.getInferenceClient("ort", model)
+        } else {
+            InferenceClient { _, _ -> "(MediaPipe .task not yet DFM-ready; stub)" }
+        }
+    }
+
+    private suspend fun getBypassClient(model: File, dfmLoader: DfmLoader): InferenceClient {
+        return if (model.isDirectory) {
+            if (!ortDfmReady) {
+                ortDfmReady = dfmLoader.ensureDfm("ort")
+                dfmLoader.loadNativeLibs("ort")
+            }
+            dfmLoader.getInferenceClient("ort", model)
+        } else {
+            InferenceClient { _, _ -> "(MediaPipe .task not yet DFM-ready; stub)" }
         }
     }
 
@@ -220,13 +240,7 @@ return@launch
         super.onDestroy()
     }
 
-    // Shares one progress renderer between .task and ORT-folder downloads.
-    private fun report(
-        done: Long,
-        total: Long,
-        modelStatus: TextView,
-        downloadProgress: ProgressBar
-    ) {
+    private fun report(done: Long, total: Long, modelStatus: TextView, downloadProgress: ProgressBar) {
         if (total > 0) {
             downloadProgress.progress = ((done * 100) / total).toInt()
             modelStatus.text = "Downloading: ${done / 1_048_576} / ${total / 1_048_576} MB"
@@ -236,43 +250,27 @@ return@launch
     }
 
     private fun pickLocalModel(): File? {
-        // Bare-metal ORT GenAI folders win over .task files when both exist.
         val ortRoot = File(filesDir, "ort-models")
         val ort = ortRoot.listFiles()
-            ?.filter { it.isDirectory && OrtModelDir.missingEntries(it).isEmpty() }
+            ?.filter { it.isDirectory && File(it, "genai_config.json").isFile && (it.list()?.size ?: 0) > 1 }
             ?.sortedBy { it.name }
             ?.firstOrNull()
         if (ort != null) return ort
-        val models = ModelStore.listModels(ModelStore.modelsDir(filesDir))
-        return models.firstOrNull { ModelStore.isUsable(it) }
+        val modelsDir = File(filesDir, "models")
+        val models = modelsDir.listFiles { f -> f.isFile && f.extension.equals("task", ignoreCase = true) }
+            ?.sortedBy { it.name } ?: emptyList()
+        return models.firstOrNull { it.length() > 0 }
     }
 
     private fun refreshModelStatus(modelStatus: TextView) {
         val picked = pickLocalModel()
         modelStatus.text = if (picked == null) {
-            "Local model: none. Tap Download (no token needed) or adb push a " +
-                "GenAI folder into files/ort-models/."
+            "Local model: none. Tap Download (no token needed) or adb push a GenAI folder into files/ort-models/."
         } else if (picked.isDirectory) {
             "Local model: ${picked.name}/ (ORT GenAI native)"
         } else {
             "Local model: ${picked.name} (${picked.length() / 1_048_576} MB, MediaPipe)"
         }
-    }
-
-    private fun localEngineFor(model: File): GatekeeperEngine {
-        val cached = localEngine
-        if (cached != null && localModelPath == model.absolutePath) return cached
-        closeLocalEngine()
-        val client: InferenceClient = if (model.isDirectory) {
-            OrtGenAiClient(applicationContext, model)
-        } else {
-            MediaPipeLlmClient(applicationContext, model)
-        }
-        val engine = GatekeeperEngine(applicationContext, client)
-        localClient = client as AutoCloseable
-        localEngine = engine
-        localModelPath = model.absolutePath
-        return engine
     }
 
     private fun closeLocalEngine() {
