@@ -21,6 +21,8 @@ jobs:
           java-version: "17"
       - name: Set up Android SDK
         uses: 1337farm/actions/setup-android-env@v1
+      - name: Create local.properties for SDK
+        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
       - name: Run library unit tests
@@ -50,6 +52,8 @@ jobs:
           java-version: "17"
       - name: Set up Android SDK
         uses: 1337farm/actions/setup-android-env@v1
+      - name: Create local.properties for SDK
+        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
       - name: Grant execute permission
         run: chmod +x gradlew scripts/smoke-test.sh
       - name: Cache Android NDK
@@ -131,15 +135,12 @@ jobs:
           [ -n "$GUAVA_JAR" ] || { echo "ERROR: guava jar not in Gradle cache"; exit 1; }
           [ -n "$PROTO_JAR" ] || { echo "ERROR: protobuf-javalite jar not in Gradle cache"; exit 1; }
           chunk_jar() {
-            local out="$1"; shift
+            local name="$1" src="$2" out="$3"
             local stage="$TMP/stage-$out"
             mkdir -p "$stage"
-            local j
-            for j in "$@"; do
-              unzip -q -n "$j" -x 'META-INF/*' -d "$stage"
-            done
+            cp "$src" "$stage/$name.jar"
             rm -f "$ROOT/$out"
-            (cd "$stage" && zip -qr "$ROOT/$out" .)
+            (cd "$stage" && zip -qr "$ROOT/$out" "$name.jar")
           }
           chunk_jni() {
             local out="$1" src="$2"
@@ -149,17 +150,17 @@ jobs:
             rm -f "$ROOT/$out"
             (cd "$stage" && zip -qr "$ROOT/$out" jni)
           }
-          chunk_jar gatekeeper-ort-classes.zip "$TMP/ort-aar/classes.jar"
+          chunk_jar ort "$TMP/ort-aar/classes.jar" gatekeeper-ort-classes.zip
           chunk_jni gatekeeper-ort-jni.zip "$TMP/ort-aar"
-          chunk_jar gatekeeper-litert-classes.zip "$TMP/lr-aar/classes.jar"
-          chunk_jar tasks-genai-classes.zip "$TMP/genai-aar/classes.jar"
+          chunk_jar litert "$TMP/lr-aar/classes.jar" gatekeeper-litert-classes.zip
+          chunk_jar tasks-genai "$TMP/genai-aar/classes.jar" tasks-genai-classes.zip
           chunk_jni tasks-genai-jni.zip "$TMP/genai-aar"
-          chunk_jar guava-classes.zip "$GUAVA_JAR"
-          chunk_jar protobuf-javalite-classes.zip "$PROTO_JAR"
-          unzip -l gatekeeper-litert-classes.zip | grep -q 'com/forgerig/gatekeeper/litert/MediaPipeLlmClient.class' || {
-            echo "ERROR: MediaPipeLlmClient.class missing from litert chunk"; exit 1; }
-          unzip -l tasks-genai-classes.zip | grep -q 'com/google/mediapipe/' || {
-            echo "ERROR: tasks-genai classes missing from genai chunk"; exit 1; }
+          chunk_jar guava "$GUAVA_JAR" guava-classes.zip
+          chunk_jar protobuf "$PROTO_JAR" protobuf-javalite-classes.zip
+          unzip -l gatekeeper-litert-classes.zip | grep -q 'litert.jar' || {
+            echo "ERROR: litert.jar missing from litert chunk"; exit 1; }
+          unzip -l tasks-genai-classes.zip | grep -q 'tasks-genai.jar' || {
+            echo "ERROR: tasks-genai.jar missing from genai chunk"; exit 1; }
           python3 - "$ROOT" "$GITHUB_SHA" <<'EOF'
           import hashlib, json, sys
           root, sha = sys.argv[1], sys.argv[2]
