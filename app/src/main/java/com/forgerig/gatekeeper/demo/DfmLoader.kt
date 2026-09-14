@@ -63,9 +63,8 @@ class DfmLoader(private val context: Context) {
         onProgress: (Long, Long) -> Unit
     ): Boolean {
         val dir = File(dfmDir, backend)
-        val classesJar = File(dir, "classes.jar")
         val local = readChunkState(dir)
-        if (classesJar.exists() && local != null && local == chunks.associate { it.name to it.sha256 }) {
+        if (dirHasJars(dir) && local != null && local == chunks.associate { it.name to it.sha256 }) {
             Log.i(tag, "DFM $backend chunks already match")
             return true
         }
@@ -76,8 +75,8 @@ class DfmLoader(private val context: Context) {
             chunks.forEach { chunk ->
                 downloadChunk(dir, chunk, onProgress)
             }
-            if (!classesJar.exists()) {
-                throw IOException("DFM $backend chunks did not contain classes.jar")
+            if (!dirHasJars(dir)) {
+                throw IOException("DFM $backend chunks did not contain any class jar")
             }
             makeReadOnly(dir)
             writeChunkState(dir, chunks.associate { it.name to it.sha256 })
@@ -89,6 +88,16 @@ class DfmLoader(private val context: Context) {
             false
         }
         return ok
+    }
+
+    private fun dirHasJars(dir: File): Boolean =
+        dir.listFiles { f -> f.isFile && f.name.endsWith(".jar") }?.isNotEmpty() ?: false
+
+    private fun jarPriority(jarName: String): Int = when {
+        jarName.contains("ort.jar") || jarName.contains("litert.jar") -> 3
+        jarName.contains("tasks-genai") -> 2
+        jarName.contains("guava") || jarName.contains("protobuf") -> 1
+        else -> 0
     }
 
     private suspend fun downloadChunk(
@@ -135,8 +144,7 @@ class DfmLoader(private val context: Context) {
         onProgress: (Long, Long) -> Unit
     ): Boolean {
         val dir = File(dfmDir, backend)
-        val classesJar = File(dir, "classes.jar")
-        if (classesJar.exists()) return true
+        if (dirHasJars(dir)) return true
         makeWritable(dir)
         dir.mkdirs()
         val asset = "gatekeeper-$backend-dfm.zip"
@@ -146,8 +154,8 @@ class DfmLoader(private val context: Context) {
         ModelDownloader.download(url, null, zipFile, onProgress)
         extractZip(zipFile, dir)
         runCatching { zipFile.delete() }
-        if (!classesJar.exists()) {
-            throw IOException("DFM $asset did not contain classes.jar")
+        if (!dirHasJars(dir)) {
+            throw IOException("DFM $asset did not contain a class jar")
         }
         makeReadOnly(dir)
         return true
@@ -155,8 +163,8 @@ class DfmLoader(private val context: Context) {
 
     fun getInferenceClient(backend: String, model: File): InferenceClient {
         val dfmBackendDir = File(dfmDir, backend)
-        val classesJar = File(dfmBackendDir, "classes.jar")
-        if (!classesJar.exists()) {
+        val jars = dfmBackendDir.listFiles { f -> f.isFile && f.name.endsWith(".jar") }?.sortedBy { jarPriority(it.name) } ?: emptyList()
+        if (jars.isEmpty()) {
             throw IllegalStateException("DFM not present for $backend")
         }
         makeReadOnly(dfmBackendDir)
@@ -164,18 +172,21 @@ class DfmLoader(private val context: Context) {
         optimizedDir.mkdirs()
         val jniDir = File(dfmBackendDir, "jni/arm64-v8a")
         val librarySearchPath = if (jniDir.exists()) jniDir.absolutePath else null
-        val classLoader = DexClassLoader(
-            classesJar.absolutePath,
-            optimizedDir.absolutePath,
-            librarySearchPath,
-            context.classLoader
-        )
+        var parent: ClassLoader = context.classLoader
+        jars.forEach { jar ->
+            parent = DexClassLoader(
+                jar.absolutePath,
+                optimizedDir.absolutePath,
+                librarySearchPath,
+                parent
+            )
+        }
         val className = when (backend) {
             "ort" -> "com.forgerig.gatekeeper.ort.OrtGenAiClient"
             "litert" -> "com.forgerig.gatekeeper.litert.MediaPipeLlmClient"
             else -> throw IllegalArgumentException("Unsupported DFM backend: $backend")
         }
-        val clientClass = classLoader.loadClass(className)
+        val clientClass = parent.loadClass(className)
         val constructor = clientClass.getConstructor(Context::class.java, File::class.java)
         return constructor.newInstance(context, model) as InferenceClient
     }
