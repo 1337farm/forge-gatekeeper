@@ -27,10 +27,10 @@ check_aar gatekeeper-ort gatekeeper-ort-release.aar
 
 echo "==> native lib check (ORT backend)"
 ORT_AAR="$(find gatekeeper-ort/build/outputs/aar -name 'gatekeeper-ort-release.aar' | head -1)"
-for lib in 'jni/arm64-v8a/libllm_engine.so' 'jni/arm64-v8a/libonnxruntime.so' 'jni/arm64-v8a/libonnxruntime-genai.so'; do
+for lib in 'jni/arm64-v8a/libllm_engine.so' 'jni/arm64-v8a/libonnxruntime.so' 'jni/arm64-v8a/libonnxruntime-genai.so' 'jni/arm64-v8a/libmat.so'; do
   unzip -l "$ORT_AAR" | grep -q "$lib" || { echo "ERROR: $lib missing in ORT AAR"; exit 1; }
 done
-echo "ORT natives present (llm_engine + onnxruntime + onnxruntime-genai)"
+echo "ORT natives present (llm_engine + onnxruntime + onnxruntime-genai + libmat)"
 
 echo "==> demo APK checks (arm64-only natives, both backends bundled)"
 ./gradlew :app:assembleRelease --stacktrace
@@ -40,7 +40,7 @@ unzip -l "$APP_APK" 'lib/*' | grep -qE 'lib/(x86|x86_64|armeabi)/' && {
   echo "ERROR: non-arm64 native ABI leaked into demo APK"; exit 1; }
 # Monolith: ORT (llm_engine/onnxruntime) and MediaPipe (libmediapipe_tasks_genai) natives
 # must both be inside the APK — nothing is fetched at runtime anymore.
-for lib in 'lib/arm64-v8a/libllm_engine.so' 'lib/arm64-v8a/libonnxruntime.so' 'lib/arm64-v8a/libonnxruntime-genai.so' 'lib/arm64-v8a/libllm_inference_engine_jni.so'; do
+for lib in 'lib/arm64-v8a/libllm_engine.so' 'lib/arm64-v8a/libonnxruntime.so' 'lib/arm64-v8a/libonnxruntime-genai.so' 'lib/arm64-v8a/libmat.so' 'lib/arm64-v8a/libllm_inference_engine_jni.so'; do
   unzip -l "$APP_APK" | grep -q "$lib" || { echo "ERROR: $lib missing from monolith demo APK"; exit 1; }
 done
 echo "demo APK OK: arm64-v8a only, ORT + MediaPipe natives bundled"
