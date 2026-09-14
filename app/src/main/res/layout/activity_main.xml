@@ -54,26 +54,11 @@
             android:layout_marginTop="8dp"
             android:text="@string/bypass_gatekeeper" />
 
-        <TextView
-            android:id="@+id/dfmStatus"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:textSize="12sp"
-            android:text="ORT backend: not downloaded" />
-
-        <Button
-            android:id="@+id/downloadDFMButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="Download ORT backend (DFM)" />
-
         <EditText
             android:id="@+id/modelUrl"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="12dp"
             android:hint="@string/hint_model_url"
             android:inputType="textUri"
             android:singleLine="true"

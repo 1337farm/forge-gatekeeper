@@ -20,13 +20,14 @@ import android.widget.Switch
 import android.app.Activity
 import com.forgerig.gatekeeper.engine.GatekeeperEngine
 import com.forgerig.gatekeeper.engine.InferenceClient
+import com.forgerig.gatekeeper.litert.MediaPipeLlmClient
 import com.forgerig.gatekeeper.model.GatekeeperConfig
 import com.forgerig.gatekeeper.model.GatekeeperResult
+import com.forgerig.gatekeeper.ort.OrtGenAiClient
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.io.File
-import java.io.IOException
 
 class DemoActivity : Activity() {
 
@@ -34,8 +35,6 @@ class DemoActivity : Activity() {
 
     private var localEngine: GatekeeperEngine? = null
     private var localClient: AutoCloseable? = null
-    private var ortDfmReady = false
-    private var litertDfmReady = false
     private var downloadReceiver: BroadcastReceiver? = null
 
     private fun capabilityLine(): String {
@@ -63,8 +62,6 @@ class DemoActivity : Activity() {
         val statusView = findViewById<TextView>(R.id.statusView)
         val outputView = findViewById<TextView>(R.id.outputView)
         val telemetryView = findViewById<TextView>(R.id.telemetryView)
-        val downloadDFMButton = findViewById<Button>(R.id.downloadDFMButton)
-        val dfmStatus = findViewById<TextView>(R.id.dfmStatus)
         val bypassSwitch = findViewById<Switch>(R.id.bypassGatekeeper)
         val modelUrl = findViewById<EditText>(R.id.modelUrl)
         val hfToken = findViewById<EditText>(R.id.hfToken)
@@ -72,12 +69,6 @@ class DemoActivity : Activity() {
         val downloadProgress = findViewById<ProgressBar>(R.id.downloadProgress)
         val modelStatus = findViewById<TextView>(R.id.modelStatus)
         val updateStatus = findViewById<TextView>(R.id.updateStatus)
-
-        downloadDFMButton.setOnClickListener {
-            downloadDFMButton.isEnabled = false
-            dfmStatus.text = "Downloading ORT backend in background — see notification."
-            DownloadService.startDfmDownload(this, "ort")
-        }
 
         modelUrl.setText(ModelDownloader.DEFAULT_ORT_REF)
         refreshModelStatus(modelStatus)
@@ -110,13 +101,6 @@ class DemoActivity : Activity() {
                         refreshModelStatus(modelStatus)
                         modelStatus.text = if (ok) "Model ready: $message" else "Download failed: $message"
                         if (ok) Toast.makeText(this@DemoActivity, "Model ready.", Toast.LENGTH_SHORT).show()
-                    }
-                    kind.startsWith(DownloadService.KIND_DFM) -> {
-                        downloadDFMButton.isEnabled = true
-                        ortDfmReady = false
-                        litertDfmReady = false
-                        dfmStatus.text = if (ok) message else "Download failed: $message"
-                        if (ok) Toast.makeText(this@DemoActivity, message, Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -161,9 +145,8 @@ class DemoActivity : Activity() {
                     }
                     val mode = if (model.isDirectory) "[ORT native] " else "[MediaPipe] "
                     val bypass = bypassSwitch.isChecked
-                    val dfmLoader = DfmLoader(this@DemoActivity)
                     closeLocalEngine()
-                    val client = getClient(model, dfmLoader, dfmStatus)
+                    val client = getClient(model)
 
                     if (bypass) {
                         try {
@@ -190,35 +173,11 @@ class DemoActivity : Activity() {
         }
     }
 
-    private suspend fun getClient(
-        model: File,
-        dfmLoader: DfmLoader,
-        dfmStatus: TextView
-    ): InferenceClient {
-        if (model.isDirectory) {
-            dfmStatus.text = "Checking ORT backend…"
-            val ok = dfmLoader.ensureDfm("ort")
-            ortDfmReady = ok
-            if (!ok) {
-                val cause = dfmLoader.lastError ?: "unknown error"
-                dfmStatus.text = "ORT backend download failed ($cause) — check connection and retry."
-                throw IOException("ORT backend DFM could not be downloaded: $cause")
-            }
-            dfmLoader.loadNativeLibs("ort")
-            dfmStatus.text = "ORT backend ready."
-            return dfmLoader.getInferenceClient("ort", model)
+    private fun getClient(model: File): InferenceClient {
+        return if (model.isDirectory) {
+            OrtGenAiClient(this, model)
         } else {
-            dfmStatus.text = "Checking MediaPipe backend…"
-            val ok = dfmLoader.ensureDfm("litert")
-            litertDfmReady = ok
-            if (!ok) {
-                val cause = dfmLoader.lastError ?: "unknown error"
-                dfmStatus.text = "MediaPipe backend download failed ($cause) — check connection and retry."
-                throw IOException("MediaPipe backend DFM could not be downloaded: $cause")
-            }
-            dfmLoader.loadNativeLibs("litert")
-            dfmStatus.text = "MediaPipe backend ready."
-            return dfmLoader.getInferenceClient("litert", model)
+            MediaPipeLlmClient(this, model)
         }
     }
 

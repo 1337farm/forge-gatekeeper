@@ -44,16 +44,6 @@ class DownloadService : Service() {
                     downloadModel(spec, token, notify)
                 }
             }
-            ACTION_DFM -> {
-                val backend = intent.getStringExtra(EXTRA_BACKEND).orEmpty()
-                runDownload("$KIND_DFM:$backend", "Downloading $backend backend") { notify ->
-                    val loader = DfmLoader(this)
-                    val ok = loader.ensureDfm(backend, notify)
-                    if (!ok) throw IllegalStateException("$backend backend download failed (${loader.lastError ?: "unknown error"})")
-                    loader.loadNativeLibs(backend)
-                    "$backend backend ready"
-                }
-            }
         }
         return START_NOT_STICKY
     }
@@ -148,16 +138,13 @@ class DownloadService : Service() {
 
     companion object {
         const val ACTION_MODEL = "com.forgerig.gatekeeper.demo.action.MODEL"
-        const val ACTION_DFM = "com.forgerig.gatekeeper.demo.action.DFM"
         const val ACTION_DONE = "com.forgerig.gatekeeper.demo.action.DONE"
         const val EXTRA_SPEC = "spec"
         const val EXTRA_TOKEN = "token"
-        const val EXTRA_BACKEND = "backend"
         const val EXTRA_KIND = "kind"
         const val EXTRA_OK = "ok"
         const val EXTRA_MESSAGE = "message"
         const val KIND_MODEL = "model"
-        const val KIND_DFM = "dfm"
         private const val CHANNEL = "downloads"
 
         fun startModelDownload(context: Context, spec: String, token: String) {
@@ -166,14 +153,6 @@ class DownloadService : Service() {
                     .setAction(ACTION_MODEL)
                     .putExtra(EXTRA_SPEC, spec)
                     .putExtra(EXTRA_TOKEN, token)
-            )
-        }
-
-        fun startDfmDownload(context: Context, backend: String) {
-            context.startForegroundService(
-                Intent(context, DownloadService::class.java)
-                    .setAction(ACTION_DFM)
-                    .putExtra(EXTRA_BACKEND, backend)
             )
         }
     }
