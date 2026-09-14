@@ -78,8 +78,8 @@ class DfmLoader(private val context: Context) {
             if (!dirHasJars(dir)) {
                 throw IOException("DFM $backend chunks did not contain any class jar")
             }
-            makeReadOnly(dir)
             writeChunkState(dir, chunks.associate { it.name to it.sha256 })
+            makeReadOnly(dir)
             true
         } catch (e: Exception) {
             runCatching { dir.deleteRecursively() }
