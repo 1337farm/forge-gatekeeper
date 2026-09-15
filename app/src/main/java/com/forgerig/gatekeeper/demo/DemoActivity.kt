@@ -34,7 +34,6 @@ class DemoActivity : Activity() {
     private val scope = MainScope()
 
     private var localEngine: GatekeeperEngine? = null
-    private var localClient: AutoCloseable? = null
     private var cachedClient: InferenceClient? = null
     private var cachedModelPath: String? = null
     private var warmupJob: kotlinx.coroutines.Job? = null
@@ -77,6 +76,9 @@ class DemoActivity : Activity() {
         refreshModelStatus(modelStatus)
         checkForUpdate(updateStatus)
         maybeAutoDownloadModel(modelStatus, downloadProgress, downloadButton)
+        // Model already on disk (restart, reinstall-over-data): warm it now
+        // in the background so the first Run tap is hot, not cold.
+        prewarmBackend()
 
         downloadButton.setOnClickListener {
             val spec = modelUrl.text.toString().trim()
@@ -120,7 +122,10 @@ class DemoActivity : Activity() {
                     downloadButton.isEnabled = true
                     downloadProgress.visibility = View.GONE
                     downloadProgress.isIndeterminate = false
-                    closeLocalEngine()
+                    // New bytes on disk may mean a different model: drop any
+                    // cached handle before re-picking and prewarming.
+                    dropCachedClient()
+                    localEngine = null
                     refreshModelStatus(modelStatus)
                     modelStatus.text = if (ok) "Model ready: $message" else "Download failed: $message"
                     if (ok) {
@@ -175,7 +180,9 @@ class DemoActivity : Activity() {
                     }
                     val model = freshModel
                     val mode = if (model.isDirectory) "[ORT native] " else "[MediaPipe] "
-                    closeLocalEngine()
+                    // Engine is per-run (cheap); the native client stays open
+                    // across taps via acquireClient — never closed here.
+                    localEngine = null
                     val client = acquireClient(model)
                     // The client is already warm (background prewarm after model
                     // arrival, or reused across runs); only first-ever touch
@@ -200,26 +207,24 @@ class DemoActivity : Activity() {
                     )
 
                     if (bypass) {
-                        try {
-                            val rawResult = client.generate("", raw)
-                            outputView.text = rawResult
-                            statusView.text = "$mode RAW (gatekeeper bypassed)"
-                            val res = monitor.stop()
-                            telemetryView.text = "Gatekeeper pipeline bypassed — no sanitization, redaction, compression, or audit." +
-                                (res?.let { "\n${it.summaryLine()}" } ?: "")
-                        } finally {
-                            (client as? AutoCloseable)?.let { runCatching { it.close() } }
-                        }
+                        val rawResult = client.generate("", raw)
+                        outputView.text = rawResult
+                        statusView.text = "$mode RAW (gatekeeper bypassed)"
+                        val res = monitor.stop()
+                        telemetryView.text = "Gatekeeper pipeline bypassed — no sanitization, redaction, compression, or audit." +
+                            (res?.let { "\n${it.summaryLine()}" } ?: "")
                     } else {
                         val engine = GatekeeperEngine(applicationContext, client)
                         localEngine = engine
-                        localClient = client as? AutoCloseable
                         val result = engine.processPrompt(raw, GatekeeperConfig())
                         val res = monitor.stop()
                         render(result, statusView, outputView, telemetryView, mode, res?.summaryLine())
                     }
                 } catch (t: Throwable) {
                     monitor.stop(suppressReport = true)
+                    // A failed run may have poisoned the native handle; drop
+                    // the cache so the next tap rebuilds instead of reusing it.
+                    dropCachedClient()
                     statusView.text = "Error: ${t.message}"
                 } finally {
                     runButton.isEnabled = true
@@ -236,19 +241,16 @@ class DemoActivity : Activity() {
         }
     }
 
-    // Reuse one warmed client per model path across Run taps: native init +
-    // session load move off the Run path entirely. A prewarm job also fires
-    // when the model download completes, so the first tap usually finds the
-    // engine already hot. Model switches (or a failed/closed client) rebuild.
+    // One warmed client per model path, kept open across Run taps: native
+    // init + session load happen once (background prewarm), never on the Run
+    // path. Only a model switch, a failed run, or destroy closes it.
     private fun acquireClient(model: File): InferenceClient {
         val path = model.absolutePath
-        val live = cachedClient?.takeIf { cachedModelPath == path }
-        if (live != null) return live
-        localClient?.let { runCatching { it.close() } }
-        val fresh = getClient(model)
-        cachedClient = fresh
-        cachedModelPath = path
-        return fresh
+        cachedClient?.takeIf { cachedModelPath == path }?.let { return it }
+        (cachedClient as? AutoCloseable)?.let { runCatching { it.close() } }
+        cachedClient = null
+        cachedModelPath = null
+        return getClient(model).also { cachedClient = it; cachedModelPath = path }
     }
 
     private fun prewarmBackend() {
@@ -392,8 +394,6 @@ class DemoActivity : Activity() {
     }
 
     private fun closeLocalEngine() {
-        localClient?.let { runCatching { it.close() } }
-        localClient = null
         localEngine = null
     }
 
