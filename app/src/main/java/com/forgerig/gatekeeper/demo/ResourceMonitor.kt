@@ -50,8 +50,8 @@ class ResourceMonitor(
     ) {
         fun summaryLine(): String {
             val pdDeltaMb = (pdPeakKb - pdAvgKb) / 1024
-            return "cpu avg=${"%.0f".format(cpuAvgPct)}% peak=${"%.0f".format(cpuPeakPct)}% · " +
-                "RSS avg=${pssAvgKb / 1024}MB peak=${pssPeakKb / 1024}MB (+${pdDeltaMb}MB peak) · " +
+            return "CPU avg ${"%.0f".format(cpuAvgPct)}% · peak ${"%.0f".format(cpuPeakPct)}% · " +
+                "RAM ${pssAvgKb / 1024}MB avg, ${pssPeakKb / 1024}MB peak (+${pdDeltaMb}MB) · " +
                 "free ${availStartMb}→${availEndMb}MB"
         }
     }

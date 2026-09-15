@@ -3,12 +3,14 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/gatekeeper_bg"
+    android:clipToPadding="false"
     android:padding="16dp">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical">
+        android:orientation="vertical"
+        android:paddingBottom="96dp">
 
         <TextView
             android:id="@+id/header"
@@ -177,14 +179,18 @@
                     android:textColorHint="@color/gatekeeper_muted"
                     android:textSize="12sp" />
 
-                <Button
-                    android:id="@+id/downloadButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:background="@drawable/btn_subtle"
-                    android:text="@string/download_model"
-                    android:textColor="@color/gatekeeper_mint" />
+            <Button
+                android:id="@+id/downloadButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/btn_subtle"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:paddingTop="10dp"
+                android:paddingBottom="10dp"
+                android:text="@string/download_model"
+                android:textColor="@color/gatekeeper_mint" />
 
                 <ProgressBar
                     android:id="@+id/downloadProgress"
@@ -239,6 +245,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
+                android:animateLayoutChanges="true"
                 android:orientation="vertical" />
 
             <TextView

@@ -45,6 +45,13 @@ class InferenceService : Service() {
         if (intent?.action != ACTION_RUN) return START_NOT_STICKY
         if (isRunning) {
             Log.i(TAG, "run already in flight — ignoring duplicate tap")
+            // Still tell the UI, so a tap during a run explains itself
+            // instead of looking dead.
+            sendBroadcast(
+                Intent(ACTION_INFER_PROGRESS)
+                    .setPackage(packageName)
+                    .putExtra(EXTRA_LINE, "$lastStatus (run already in progress…)")
+            )
             return START_NOT_STICKY
         }
         val prompt = intent.getStringExtra(EXTRA_PROMPT).orEmpty()
