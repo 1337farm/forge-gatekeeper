@@ -11,6 +11,7 @@ import android.os.IBinder
 import android.util.Log
 import com.forgerig.gatekeeper.engine.GatekeeperEngine
 import com.forgerig.gatekeeper.model.GatekeeperConfig
+import com.forgerig.gatekeeper.model.GatekeeperResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -94,8 +95,16 @@ class InferenceService : Service() {
                         publish("$mode$line", nm, id)
                     }
                     val res = monitor.stop()
+                    // SUCCESS answers the safe prompt so the output shows a
+                    // real LLM reply, not just the sanitized echo. Blocked /
+                    // fallback stay answer-free by design.
+                    val answer = if (result is GatekeeperResult.Success) {
+                        publish("$mode Answering…", nm, id)
+                        runCatching { client.generate("", result.safeCompressedPrompt) }
+                            .getOrElse { "Answer failed: ${it.message}" }
+                    } else null
                     val (status, output, telemetry) =
-                        RunResultFormat.format(result, mode, res?.summaryLine())
+                        RunResultFormat.format(result, mode, res?.summaryLine(), answer)
                     finish(nm, id, true, status, output, telemetry)
                 }
             } catch (t: Throwable) {
