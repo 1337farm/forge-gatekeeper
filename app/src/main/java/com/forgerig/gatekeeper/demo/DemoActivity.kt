@@ -18,32 +18,15 @@ import android.widget.TextView
 import android.widget.Toast
 import android.widget.Switch
 import android.app.Activity
-import com.forgerig.gatekeeper.engine.GatekeeperEngine
-import com.forgerig.gatekeeper.engine.InferenceClient
-import com.forgerig.gatekeeper.litert.MediaPipeLlmClient
-import com.forgerig.gatekeeper.model.GatekeeperConfig
-import com.forgerig.gatekeeper.model.GatekeeperResult
-import com.forgerig.gatekeeper.ort.OrtGenAiClient
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import java.io.File
 
 class DemoActivity : Activity() {
 
     private val scope = MainScope()
 
-    private var localEngine: GatekeeperEngine? = null
-    private var cachedClient: InferenceClient? = null
-    private var cachedModelPath: String? = null
-    // Guards check-then-act in acquireClient: the Run tap (Main) and the
-    // background prewarm job (IO) can otherwise both miss the cache and
-    // build two native engines, leaking one.
-    private val clientLock = Mutex()
-    private var lastAcquireReused = false
-    private var warmupJob: kotlinx.coroutines.Job? = null
     private var downloadReceiver: BroadcastReceiver? = null
 
     private fun capabilityLine(): String {
@@ -119,6 +102,21 @@ class DemoActivity : Activity() {
                         }
                         return
                     }
+                    InferenceService.ACTION_INFER_PROGRESS -> {
+                        statusView.text = intent.getStringExtra(InferenceService.EXTRA_LINE)
+                            ?: statusView.text
+                        return
+                    }
+                    InferenceService.ACTION_INFER_DONE -> {
+                        runButton.isEnabled = true
+                        val ok = intent.getBooleanExtra(InferenceService.EXTRA_OK, false)
+                        statusView.text = intent.getStringExtra(InferenceService.EXTRA_STATUS)
+                            ?: statusView.text
+                        outputView.text = intent.getStringExtra(InferenceService.EXTRA_OUTPUT).orEmpty()
+                        telemetryView.text = intent.getStringExtra(InferenceService.EXTRA_TELEMETRY).orEmpty()
+                        if (ok) Toast.makeText(this@DemoActivity, "Run finished.", Toast.LENGTH_SHORT).show()
+                        return
+                    }
                     DownloadService.ACTION_DONE -> Unit
                     else -> return
                 }
@@ -129,15 +127,16 @@ class DemoActivity : Activity() {
                     downloadButton.isEnabled = true
                     downloadProgress.visibility = View.GONE
                     downloadProgress.isIndeterminate = false
-                    // New bytes on disk may mean a different model: drop any
-                    // cached handle before re-picking and prewarming.
-                    dropCachedClient()
-                    localEngine = null
                     refreshModelStatus(modelStatus)
                     modelStatus.text = if (ok) "Model ready: $message" else "Download failed: $message"
                     if (ok) {
                         Toast.makeText(this@DemoActivity, "Model ready.", Toast.LENGTH_SHORT).show()
-                        prewarmBackend()
+                        // New bytes may mean a different model: drop any cached
+                        // handle before re-picking and prewarming.
+                        scope.launch(Dispatchers.IO) {
+                            BackendCache.drop()
+                            prewarmBackend()
+                        }
                     }
                 }
             }
@@ -169,160 +168,27 @@ class DemoActivity : Activity() {
                 statusView.text = "Type a prompt first."
                 return@setOnClickListener
             }
+            if (ModelFiles.pick(filesDir) == null) {
+                statusView.text = "No local model — tap Download (no token needed) or adb push a folder."
+                return@setOnClickListener
+            }
+            // The run lives in a foreground service: minimizing, rotating,
+            // or leaving the app never stops inference. Stage lines and the
+            // final result arrive back here as broadcasts.
             runButton.isEnabled = false
-            statusView.text = "Running on-device…"
+            statusView.text = "Running on-device (background-safe)…"
             outputView.text = ""
             telemetryView.text = ""
-            val monitor = ResourceMonitor(this@DemoActivity)
-            scope.launch {
-                monitor.start()
-                try {
-                    val bypass = bypassSwitch.isChecked
-                    val freshModel = pickLocalModel()
-                    if (freshModel == null) {
-                        downloadProgress.visibility = View.GONE
-                        downloadProgress.isIndeterminate = false
-                        statusView.text = "No local model — tap Download (no token needed) or adb push a folder."
-                        return@launch
-                    }
-                    val model = freshModel
-                    val mode = if (model.isDirectory) "[ORT native] " else "[MediaPipe] "
-                    // Engine is per-run (cheap); the native client stays open
-                    // across taps via acquireClient — never closed here.
-                    localEngine = null
-                    val client = acquireClient(model)
-                    // The client is already warm (background prewarm after model
-                    // arrival, or reused across runs); only first-ever touch
-                    // pays cold init, and it happens off the Run tap.
-                    val provider = (client as? OrtGenAiClient)?.activeProvider
-                    val warmMs = when (client) {
-                        is OrtGenAiClient -> client.lastWarmupMs
-                        is MediaPipeLlmClient -> client.lastWarmupMs
-                        else -> -1L
-                    }
-                    val warmLine = buildString {
-                        if (lastAcquireReused) append("Reusing warm backend") else append("Ready")
-                        if (!provider.isNullOrBlank()) append(" ($provider)")
-                        if (warmMs >= 0) append(" in ${warmMs}ms")
-                        append(" — generating…")
-                    }
-                    statusView.text = warmLine
-                    android.util.Log.i(
-                        "GatekeeperDemo",
-                        "acquire backend=${if (model.isDirectory) "ort" else "litert"} " +
-                            "reused=$lastAcquireReused " +
-                            "provider=${provider ?: "mediapipe"} ms=$warmMs"
-                    )
-
-                    if (bypass) {
-                        val rawResult = client.generate("", raw)
-                        outputView.text = rawResult
-                        statusView.text = "$mode RAW (gatekeeper bypassed)"
-                        val res = monitor.stop()
-                        telemetryView.text = "Gatekeeper pipeline bypassed — no sanitization, redaction, compression, or audit." +
-                            (res?.let { "\n${it.summaryLine()}" } ?: "")
-                    } else {
-                        val engine = GatekeeperEngine(applicationContext, client)
-                        localEngine = engine
-                        // processPrompt runs on this Main-scope coroutine, so
-                        // stage lines land directly on the status view live.
-                        val result = engine.processPrompt(raw, GatekeeperConfig()) { line ->
-                            statusView.text = "$mode$line"
-                        }
-                        val res = monitor.stop()
-                        render(result, statusView, outputView, telemetryView, mode, res?.summaryLine())
-                    }
-                } catch (t: Throwable) {
-                    monitor.stop(suppressReport = true)
-                    // A failed run may have poisoned the native handle; drop
-                    // the cache so the next tap rebuilds instead of reusing it.
-                    dropCachedClient()
-                    statusView.text = "Error: ${t.message}"
-                } finally {
-                    runButton.isEnabled = true
-                }
-            }
+            InferenceService.startRun(this, raw, bypassSwitch.isChecked)
         }
     }
-
-    private fun getClient(model: File): InferenceClient {
-        return if (model.isDirectory) {
-            OrtGenAiClient(this, model)
-        } else {
-            MediaPipeLlmClient(this, model)
-        }
-    }
-
-    // One warmed client per model path, kept open across Run taps: native
-    // init + session load happen once (background prewarm), never on the Run
-    // path. Only a model switch, a failed run, or destroy closes it.
-    // Suspend + locked: Run tap and prewarm job must not double-create.
-    private suspend fun acquireClient(model: File): InferenceClient =
-        clientLock.withLock {
-            val path = model.absolutePath
-            cachedClient?.takeIf { cachedModelPath == path }?.let {
-                lastAcquireReused = true
-                return@withLock it
-            }
-            (cachedClient as? AutoCloseable)?.let { runCatching { it.close() } }
-            cachedClient = null
-            cachedModelPath = null
-            lastAcquireReused = false
-            getClient(model).also { cachedClient = it; cachedModelPath = path }
-        }
 
     private fun prewarmBackend() {
-        val model = pickLocalModel() ?: return
-        if (cachedClient != null && cachedModelPath == model.absolutePath) return
-        warmupJob?.cancel()
-        warmupJob = scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                val client = acquireClient(model)
-                when (client) {
-                    is OrtGenAiClient -> client.warmup()
-                    is MediaPipeLlmClient -> client.warmup()
-                }
-            } catch (t: Throwable) {
-                cachedClient = null
-                cachedModelPath = null
-            }
-        }
-    }
-
-    private fun render(
-        result: GatekeeperResult,
-        statusView: TextView,
-        outputView: TextView,
-        telemetryView: TextView,
-        mode: String,
-        resourceLine: String? = null
-    ) {
-        val resSuffix = resourceLine?.let { "\n$it" } ?: ""
-        when (result) {
-            is GatekeeperResult.Success -> {
-                val t = result.telemetry
-                statusView.text = mode + "SUCCESS (heat=${result.heat})"
-                outputView.text = result.safeCompressedPrompt
-                telemetryView.text = "tokens ${t.preCompressionTokens} → ${t.postCompressionTokens} " +
-                    "(${String.format("%.1f", t.compressionRatioPct)}% saved) · " +
-                    "compress iters=${t.compressionIterations} audit iters=${t.auditIterations} · " +
-                    "steps=${t.executionOrder.size} total=${t.totalDurationMs}ms · " +
-                    "redactions=${t.redactionEvents}$resSuffix"
-            }
-            is GatekeeperResult.Blocked -> {
-                statusView.text = mode + "BLOCKED (heat=${result.heat}): ${result.reason}"
-                outputView.text = "(nothing sent anywhere)"
-                telemetryView.text = "total=${result.telemetry.totalDurationMs}ms · " +
-                    "redactions=${result.telemetry.redactionEvents}$resSuffix"
-            }
-            is GatekeeperResult.FallbackRequired -> {
-                val t = result.telemetry
-                statusView.text = mode + "FALLBACK: ${result.reason}"
-                outputView.text = result.sanitizedPrompt
-                telemetryView.text = "maxRetriesExhausted=${t.maxRetriesExhausted} · " +
-                    "compress iters=${t.compressionIterations} audit iters=${t.auditIterations} · " +
-                    "steps=${t.executionOrder.size} total=${t.totalDurationMs}ms · " +
-                    "redactions=${t.redactionEvents}$resSuffix"
+        scope.launch(Dispatchers.IO) {
+            val model = ModelFiles.pick(filesDir) ?: return@launch
+            runCatching {
+                val client = BackendCache.acquire(applicationContext, model)
+                BackendCache.warmup(client)
             }
         }
     }
@@ -332,7 +198,19 @@ class DemoActivity : Activity() {
         downloadReceiver?.let {
             val filter = IntentFilter(DownloadService.ACTION_DONE)
             filter.addAction(DownloadService.ACTION_PROGRESS)
+            filter.addAction(InferenceService.ACTION_INFER_PROGRESS)
+            filter.addAction(InferenceService.ACTION_INFER_DONE)
             registerReceiver(it, filter, RECEIVER_NOT_EXPORTED)
+        }
+        // Coming back mid-run (minimized/rotated): reflect the service truth
+        // instead of a stale Idle screen.
+        if (InferenceService.isRunning) {
+            findViewById<Button>(R.id.runButton).isEnabled = false
+            findViewById<TextView>(R.id.statusView).text = InferenceService.lastStatus
+        } else if (InferenceService.lastStatus != "Idle.") {
+            findViewById<TextView>(R.id.statusView).text = InferenceService.lastStatus
+            findViewById<TextView>(R.id.outputView).text = InferenceService.lastOutput
+            findViewById<TextView>(R.id.telemetryView).text = InferenceService.lastTelemetry
         }
     }
 
@@ -343,8 +221,6 @@ class DemoActivity : Activity() {
 
     override fun onDestroy() {
         scope.cancel()
-        dropCachedClient()
-        closeLocalEngine()
         super.onDestroy()
     }
 
@@ -376,7 +252,7 @@ class DemoActivity : Activity() {
         downloadProgress: ProgressBar,
         downloadButton: Button
     ) {
-        if (pickLocalModel() != null) return
+        if (ModelFiles.pick(filesDir) != null) return
         downloadButton.isEnabled = false
         downloadProgress.visibility = View.VISIBLE
         downloadProgress.isIndeterminate = true
@@ -387,21 +263,8 @@ class DemoActivity : Activity() {
     private fun hfTokenValue(): String =
         runCatching { findViewById<EditText>(R.id.hfToken).text.toString() }.getOrDefault("")
 
-    private fun pickLocalModel(): File? {
-        val ortRoot = File(filesDir, "ort-models")
-        val ort = ortRoot.listFiles()
-            ?.filter { it.isDirectory && File(it, "genai_config.json").isFile && (it.list()?.size ?: 0) > 1 }
-            ?.sortedBy { it.name }
-            ?.firstOrNull()
-        if (ort != null) return ort
-        val modelsDir = File(filesDir, "models")
-        val models = modelsDir.listFiles { f -> f.isFile && f.extension.equals("task", ignoreCase = true) }
-            ?.sortedBy { it.name } ?: emptyList()
-        return models.firstOrNull { it.length() > 0 }
-    }
-
     private fun refreshModelStatus(modelStatus: TextView) {
-        val picked = pickLocalModel()
+        val picked = ModelFiles.pick(filesDir)
         modelStatus.text = if (picked == null) {
             "Local model: none. Tap Download (no token needed) or adb push a model."
         } else if (picked.isDirectory) {
@@ -409,17 +272,5 @@ class DemoActivity : Activity() {
         } else {
             "Local model: ${picked.name} (${picked.length() / 1_048_576} MB, MediaPipe)"
         }
-    }
-
-    private fun closeLocalEngine() {
-        localEngine = null
-    }
-
-    private fun dropCachedClient() {
-        warmupJob?.cancel()
-        warmupJob = null
-        cachedClient?.let { runCatching { (it as? AutoCloseable)?.close() } }
-        cachedClient = null
-        cachedModelPath = null
     }
 }
