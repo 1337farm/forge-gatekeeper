@@ -54,7 +54,9 @@ class DemoActivity : Activity() {
         val statusView = findViewById<TextView>(R.id.statusView)
         val outputView = findViewById<TextView>(R.id.outputView)
         val telemetryView = findViewById<TextView>(R.id.telemetryView)
+        val debugLogView = findViewById<TextView>(R.id.debugLogView)
         val bypassSwitch = findViewById<Switch>(R.id.bypassGatekeeper)
+        val forceAllSwitch = findViewById<Switch>(R.id.forceAllSteps)
         val modelUrl = findViewById<EditText>(R.id.modelUrl)
         val hfToken = findViewById<EditText>(R.id.hfToken)
         val downloadButton = findViewById<Button>(R.id.downloadButton)
@@ -107,6 +109,16 @@ class DemoActivity : Activity() {
                             ?: statusView.text
                         return
                     }
+                    InferenceService.ACTION_INFER_DEBUG -> {
+                        val line = intent.getStringExtra(InferenceService.EXTRA_DEBUG_LINE)
+                        if (!line.isNullOrBlank()) {
+                            val kept = (debugLogView.text.toString().split("\n") + line)
+                                .takeLast(200)
+                                .joinToString("\n")
+                            debugLogView.text = kept
+                        }
+                        return
+                    }
                     InferenceService.ACTION_INFER_DONE -> {
                         runButton.isEnabled = true
                         val ok = intent.getBooleanExtra(InferenceService.EXTRA_OK, false)
@@ -149,7 +161,8 @@ class DemoActivity : Activity() {
             val status = statusView.text.toString()
             val output = outputView.text.toString()
             val telemetry = telemetryView.text.toString()
-            val payload = listOf(caps, status, output, telemetry)
+            val debug = debugLogView.text.toString()
+            val payload = listOf(caps, status, output, telemetry, debug)
                 .map { it.trim() }
                 .filter { it.isNotEmpty() && it != "Idle." }
                 .joinToString("\n\n")
@@ -179,7 +192,8 @@ class DemoActivity : Activity() {
             statusView.text = "Running on-device (background-safe)…"
             outputView.text = ""
             telemetryView.text = ""
-            InferenceService.startRun(this, raw, bypassSwitch.isChecked)
+            debugLogView.text = ""
+            InferenceService.startRun(this, raw, bypassSwitch.isChecked, forceAllSwitch.isChecked)
         }
     }
 
@@ -199,6 +213,7 @@ class DemoActivity : Activity() {
             val filter = IntentFilter(DownloadService.ACTION_DONE)
             filter.addAction(DownloadService.ACTION_PROGRESS)
             filter.addAction(InferenceService.ACTION_INFER_PROGRESS)
+            filter.addAction(InferenceService.ACTION_INFER_DEBUG)
             filter.addAction(InferenceService.ACTION_INFER_DONE)
             registerReceiver(it, filter, RECEIVER_NOT_EXPORTED)
         }
@@ -207,10 +222,12 @@ class DemoActivity : Activity() {
         if (InferenceService.isRunning) {
             findViewById<Button>(R.id.runButton).isEnabled = false
             findViewById<TextView>(R.id.statusView).text = InferenceService.lastStatus
+            findViewById<TextView>(R.id.debugLogView).text = InferenceService.lastDebug
         } else if (InferenceService.lastStatus != "Idle.") {
             findViewById<TextView>(R.id.statusView).text = InferenceService.lastStatus
             findViewById<TextView>(R.id.outputView).text = InferenceService.lastOutput
             findViewById<TextView>(R.id.telemetryView).text = InferenceService.lastTelemetry
+            findViewById<TextView>(R.id.debugLogView).text = InferenceService.lastDebug
         }
     }
 

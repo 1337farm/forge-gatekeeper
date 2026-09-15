@@ -5,6 +5,10 @@ import com.forgerig.gatekeeper.model.GatekeeperResult
 // Pure result formatting shared by the foreground service (broadcasts
 // pre-rendered strings) and anything else that displays a run outcome.
 object RunResultFormat {
+    fun skippedNote(skipped: Map<String, String>): String =
+        if (skipped.isEmpty()) "" else "\nskipped: " +
+            skipped.entries.joinToString("; ") { "${it.key} (${it.value})" }
+
     fun format(
         result: GatekeeperResult,
         mode: String,
@@ -23,7 +27,8 @@ object RunResultFormat {
                         "(${String.format("%.1f", t.compressionRatioPct)}% saved) · " +
                         "compress iters=${t.compressionIterations} audit iters=${t.auditIterations} · " +
                         "steps=${t.executionOrder.size} total=${t.totalDurationMs}ms · " +
-                        "redactions=${t.redactionEvents}$resSuffix"
+                        "redactions=${t.redactionEvents}$resSuffix" +
+                        skippedNote(t.skippedSteps)
                 )
             }
             is GatekeeperResult.Blocked -> {
@@ -31,7 +36,8 @@ object RunResultFormat {
                     mode + "BLOCKED (heat=${result.heat}): ${result.reason}",
                     "(nothing sent anywhere)",
                     "total=${result.telemetry.totalDurationMs}ms · " +
-                        "redactions=${result.telemetry.redactionEvents}$resSuffix"
+                        "redactions=${result.telemetry.redactionEvents}$resSuffix" +
+                        skippedNote(result.telemetry.skippedSteps)
                 )
             }
             is GatekeeperResult.FallbackRequired -> {
@@ -42,7 +48,8 @@ object RunResultFormat {
                     "maxRetriesExhausted=${t.maxRetriesExhausted} · " +
                         "compress iters=${t.compressionIterations} audit iters=${t.auditIterations} · " +
                         "steps=${t.executionOrder.size} total=${t.totalDurationMs}ms · " +
-                        "redactions=${t.redactionEvents}$resSuffix"
+                        "redactions=${t.redactionEvents}$resSuffix" +
+                        skippedNote(t.skippedSteps)
                 )
             }
         }
