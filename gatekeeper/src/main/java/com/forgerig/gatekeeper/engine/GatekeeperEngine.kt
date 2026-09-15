@@ -37,6 +37,15 @@ class GatekeeperEngine(
     private val npuMutex = Mutex()
     private val tag = "ForgeGatekeeper"
 
+    companion object {
+        // Bare greetings/fillers the on-device judge mistakes for entities.
+        // Compared lowercase against trimmed ambient_pii entries.
+        internal val GENERIC_TOKENS = setOf(
+            "hi", "hey", "hello", "yo", "thanks", "thank", "please",
+            "ok", "okay", "yes", "no", "bye", "thanks!"
+        )
+    }
+
     suspend fun processPrompt(
         rawPrompt: String,
         config: GatekeeperConfig = GatekeeperConfig(),
@@ -174,19 +183,32 @@ class GatekeeperEngine(
             Log.w(tag, reason)
             return GatekeeperResult.Blocked(reason, heat, ledger(preTokens, injected = true, fallback = reason))
         }
-        stageA.ambient_pii.forEach { redactionEvents.add("ambient_pii:$it") }
+        // The on-device judge over-reports: observed ambient_pii:["hi"] for
+        // the input "hi", which Stage B then masked into oblivion. Validate
+        // the list — real PII is rarely 1-2 chars or a bare greeting —
+        // instead of trusting it blindly. Dropped entries are logged.
+        val ambientPii = stageA.ambient_pii
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+        val bogusPii = ambientPii.filter { it.length < 3 || it.lowercase() in GENERIC_TOKENS }
+        if (bogusPii.isNotEmpty()) {
+            Log.i(tag, "ambient PII rejected as non-entity: $bogusPii")
+        }
+        val validPii = ambientPii - bogusPii.toSet()
+        validPii.forEach { redactionEvents.add("ambient_pii:$it") }
 
         var working = sanitized
-        if (config.enableStageB && stageA.ambient_pii.isNotEmpty()) {
+        if (config.enableStageB && validPii.isNotEmpty()) {
             val s4 = System.currentTimeMillis()
             try {
-                working = maskAmbientPii(working, stageA.ambient_pii)
-                stageA.ambient_pii.forEach { redactionEvents.add("masked:$it") }
+                working = maskAmbientPii(working, validPii)
+                validPii.forEach { redactionEvents.add("masked:$it") }
                 rec(
                     GatekeeperStep.STAGE_B_PII_REDACTION, StepStatus.EXECUTED,
-                    "masked=${stageA.ambient_pii.size}", 0, System.currentTimeMillis() - s4
+                    "masked=${validPii.size}", 0, System.currentTimeMillis() - s4
                 )
-                onProgress("Stage B ✓ masked ${stageA.ambient_pii.size} PII (${elapsed()})")
+                onProgress("Stage B ✓ masked ${validPii.size} PII (${elapsed()})")
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {

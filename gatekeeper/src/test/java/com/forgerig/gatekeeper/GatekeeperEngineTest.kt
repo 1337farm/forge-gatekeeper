@@ -291,6 +291,25 @@ class GatekeeperEngineTest {
     }
 
     @Test
+    fun `bogus ambient PII is rejected, real PII still masked`() = runTest {
+        val engine = GatekeeperEngine(
+            ctx(),
+            fakeInference { _, _, _ ->
+                stageAJson(pii = "\"hi\", \"Hello\", \"Alice Cooper\"")
+            },
+            eligible()
+        )
+        val r = engine.processPrompt("hi Hello Alice Cooper please help me", GatekeeperConfig())
+        assertTrue(r is GatekeeperResult.Success)
+        r as GatekeeperResult.Success
+        assertEquals("hi Hello [PII_REDACTED] please help me", r.safeCompressedPrompt)
+        assertTrue(r.telemetry.redactionEvents.contains("ambient_pii:Alice Cooper"))
+        assertTrue(r.telemetry.redactionEvents.contains("masked:Alice Cooper"))
+        assertTrue(r.telemetry.redactionEvents.none { it.contains("hi", ignoreCase = true) })
+        assertTrue(r.telemetry.redactionEvents.none { it.contains("Hello") })
+    }
+
+    @Test
     fun `cleanCandidate strips scaffolding`() {
         val engine = GatekeeperEngine(ctx(), fakeInference { _, _, _ -> "" }, eligible())
         val raw = "USER_TEXT: blah\n\nCOMPRESSED_OUTPUT: the payload here\n\n- [Explanation]: because reasons\n```"
