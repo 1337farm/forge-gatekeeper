@@ -224,7 +224,11 @@ class DemoActivity : Activity() {
                     } else {
                         val engine = GatekeeperEngine(applicationContext, client)
                         localEngine = engine
-                        val result = engine.processPrompt(raw, GatekeeperConfig())
+                        // processPrompt runs on this Main-scope coroutine, so
+                        // stage lines land directly on the status view live.
+                        val result = engine.processPrompt(raw, GatekeeperConfig()) { line ->
+                            statusView.text = "$mode$line"
+                        }
                         val res = monitor.stop()
                         render(result, statusView, outputView, telemetryView, mode, res?.summaryLine())
                     }

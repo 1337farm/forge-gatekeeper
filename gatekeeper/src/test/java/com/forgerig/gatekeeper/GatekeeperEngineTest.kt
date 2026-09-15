@@ -140,8 +140,7 @@ class GatekeeperEngineTest {
     }
 
     @Test
-    fun `npu timeout routes to fallback not crash`() = runTest {
-        val engine = GatekeeperEngine(
+    fun `npu timeout routes to fallback not crash`() = runTest {        val engine = GatekeeperEngine(
             ctx(),
             object : InferenceClient {
                 override suspend fun generate(systemPrompt: String, userContent: String): String {
@@ -168,5 +167,31 @@ class GatekeeperEngineTest {
         assertTrue(r is GatekeeperResult.Success)
         r as GatekeeperResult.Success
         assertTrue(r.telemetry.skippedSteps.containsKey(GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION.name))
+    }
+
+    @Test
+    fun `progress callback emits every stage with timing`() = runTest {
+        val lines = mutableListOf<String>()
+        val engine = GatekeeperEngine(
+            ctx(),
+            fakeInference { _, _, n ->
+                when (n) {
+                    1 -> stageAJson()
+                    2 -> "SHORT: do X with param 42"
+                    else -> "{\"status\":\"MATCH\",\"drift_score\":0.02," +
+                        "\"dropped_constraints\":[],\"hallucinations\":[],\"corrective_feedback\":\"\"}"
+                }
+            },
+            eligible()
+        )
+        val r = engine.processPrompt("do X with param 42", GatekeeperConfig(), lines::add)
+        assertTrue(r is GatekeeperResult.Success)
+        val joined = lines.joinToString("\n")
+        assertTrue(joined.contains("Scrub"))
+        assertTrue(joined.contains("Hardware"))
+        assertTrue(joined.contains("Stage A"))
+        assertTrue(joined.contains("Compress"))
+        assertTrue(joined.contains("Audit"))
+        assertTrue(joined.contains("Done"))
     }
 }
