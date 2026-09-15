@@ -270,16 +270,54 @@ class GatekeeperEngine(
             return "infer calls=$inferCalls inferMs=$inferMs tps~${"%.1f".format(tps)}"
         }
 
+        fun maxRetriesFallback(): GatekeeperResult.FallbackRequired {
+            rec(
+                GatekeeperStep.FALLBACK_TO_SANITIZED, StepStatus.EXECUTED,
+                "maxRetries=${config.maxRetries} exhausted"
+            )
+            return GatekeeperResult.FallbackRequired(
+                sanitized,
+                "accuracy maxRetries exhausted; drift=$lastDrift dropped=$lastDropped",
+                ledger(
+                    preTokens, drift = lastDrift, dropped = lastDropped,
+                    fallback = "maxRetries exhausted", maxEx = true,
+                    compIt = compIt, audIt = audIt
+                )
+            )
+        }
+
         while (compIt <= config.maxRetries) {
             val sc = System.currentTimeMillis()
             onProgress("Compress iter ${compIt + 1}: querying LLM…")
             try {
-                candidate = timeInfer(
-                    "compress#${compIt + 1}",
-                    SystemPrompts.compressionPrompt(),
-                    buildCompressionInput(working, corrective, previousFailed)
-                ).trim()
+                candidate = cleanCandidate(
+                    timeInfer(
+                        "compress#${compIt + 1}",
+                        SystemPrompts.compressionPrompt(),
+                        buildCompressionInput(working, corrective, previousFailed)
+                    ).trim()
+                )
                 compIt++
+                val candTokens = TokenEstimator.count(candidate)
+                // Deterministic backstop for small-model scaffolding: a real
+                // compression never balloons past ~3x (or +40 tokens slack
+                // for tiny inputs). Without this, hallucinated explanations
+                // sail to the auditor, which can rubber-stamp them MATCH.
+                val cap = maxOf(workingTokens * 3, workingTokens + 40)
+                if (candTokens > cap) {
+                    lastDropped = listOf("output expanded ${candTokens} vs ${workingTokens} input tokens")
+                    rec(
+                        GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION, StepStatus.FAILED,
+                        "expansion guard tripped ($candTokens vs $workingTokens)", compIt, System.currentTimeMillis() - sc
+                    )
+                    previousFailed = candidate
+                    corrective = "Output expanded instead of compressing " +
+                        "($candTokens vs $workingTokens tokens). Output MUST be " +
+                        "shorter than the input. Compress, do not explain."
+                    onProgress("Compress ✗ expanded ${candTokens} vs ${workingTokens} — retrying (${elapsed()})")
+                    if (compIt > config.maxRetries) return maxRetriesFallback()
+                    continue
+                }
                 rec(
                     GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION,
                     if (compIt > 1) StepStatus.RETRIED else StepStatus.EXECUTED,
@@ -371,19 +409,7 @@ class GatekeeperEngine(
                     corrective = audit.correctiveFeedback
                     onProgress("Audit ✗ MISMATCH drift=${audit.driftScore} — retrying (${elapsed()})")
                     if (compIt > config.maxRetries || audIt > config.maxRetries) {
-                        rec(
-                            GatekeeperStep.FALLBACK_TO_SANITIZED, StepStatus.EXECUTED,
-                            "maxRetries=${config.maxRetries} exhausted"
-                        )
-                        return GatekeeperResult.FallbackRequired(
-                            sanitized,
-                            "accuracy maxRetries exhausted; drift=$lastDrift dropped=$lastDropped",
-                            ledger(
-                                preTokens, drift = lastDrift, dropped = lastDropped,
-                                fallback = "maxRetries exhausted", maxEx = true,
-                                compIt = compIt, audIt = audIt
-                            )
-                        )
+                        return maxRetriesFallback()
                     }
                 }
             }
@@ -440,6 +466,23 @@ class GatekeeperEngine(
         return "ORIGINAL TASK:\n$original\n\nYOUR PREVIOUS FAILED ATTEMPT (do not repeat these errors):\n" +
             "$previousFailed\n\nJUDGE CORRECTIVE FEEDBACK (must fix all):\n$corrective\n\n" +
             "Now produce the corrected compressed output ONLY."
+    }
+
+    // Small models wrap output in scaffolding ("USER_TEXT:…",
+    // "COMPRESSED_OUTPUT:…", "- [Explanation]:…", ``` fences) instead of
+    // emitting compressed text only. Strip it deterministically; only the
+    // surviving payload reaches the auditor and the answer step.
+    internal fun cleanCandidate(raw: String): String {
+        var s = raw.trim()
+        val payload = s.indexOf("COMPRESSED_OUTPUT:")
+        if (payload >= 0) s = s.substring(payload + "COMPRESSED_OUTPUT:".length)
+        val explanation = s.indexOf("[Explanation")
+        if (explanation >= 0) {
+            var end = explanation
+            while (end > 0 && (s[end - 1] == '-' || s[end - 1].isWhitespace())) end--
+            s = s.substring(0, end)
+        }
+        return s.replace("```json", "").replace("```", "").trim()
     }
 
     internal fun parseAudit(raw: String): AccuracyAuditResult {

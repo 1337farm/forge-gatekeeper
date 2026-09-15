@@ -187,8 +187,7 @@ class GatekeeperEngineTest {
     }
 
     @Test
-    fun `tiny input with zero floor still runs compress and audit`() = runTest {
-        var calls = 0
+    fun `tiny input with zero floor still runs compress and audit`() = runTest {        var calls = 0
         val engine = GatekeeperEngine(
             ctx(),
             fakeInference { _, _, _ ->
@@ -256,5 +255,46 @@ class GatekeeperEngineTest {
         assertTrue(joined.contains("Compress"))
         assertTrue(joined.contains("Audit"))
         assertTrue(joined.contains("Done"))
+    }
+
+    @Test
+    fun `expansion guard trips and falls back without auditing garbage`() = runTest {
+        var compressCalls = 0
+        var auditCalls = 0
+        val engine = GatekeeperEngine(
+            ctx(),
+            object : InferenceClient {
+                override suspend fun generate(systemPrompt: String, userContent: String): String {
+                    return if (systemPrompt.contains("auditor", ignoreCase = true)) {
+                        auditCalls++
+                        "{\"status\":\"MATCH\",\"drift_score\":0.0," +
+                            "\"dropped_constraints\":[],\"hallucinations\":[],\"corrective_feedback\":\"\"}"
+                    } else if (systemPrompt.contains("classifier", ignoreCase = true)) {
+                        stageAJson()
+                    } else {
+                        compressCalls++
+                        "x".repeat(500)
+                    }
+                }
+            },
+            eligible()
+        )
+        val r = engine.processPrompt(
+            "please compress this fairly long instruction without any delay whatsoever",
+            GatekeeperConfig(maxRetries = 1)
+        )
+        assertTrue(r is GatekeeperResult.FallbackRequired)
+        r as GatekeeperResult.FallbackRequired
+        assertTrue(r.telemetry.maxRetriesExhausted)
+        assertEquals(0, auditCalls)
+        assertEquals(2, compressCalls)
+    }
+
+    @Test
+    fun `cleanCandidate strips scaffolding`() {
+        val engine = GatekeeperEngine(ctx(), fakeInference { _, _, _ -> "" }, eligible())
+        val raw = "USER_TEXT: blah\n\nCOMPRESSED_OUTPUT: the payload here\n\n- [Explanation]: because reasons\n```"
+        assertEquals("the payload here", engine.cleanCandidate(raw))
+        assertEquals("plain text", engine.cleanCandidate("  plain text\n"))
     }
 }

@@ -66,11 +66,11 @@ object RunResultFormat {
                     mode + "SUCCESS (heat=${result.heat})",
                     result.safeCompressedPrompt +
                         (answer?.let { "\n\n— Answer —\n$it" } ?: ""),
-                    "tokens ${t.preCompressionTokens} → ${t.postCompressionTokens} " +
+                    "Tokens: ${t.preCompressionTokens} → ${t.postCompressionTokens} " +
                         "(${String.format("%.1f", t.compressionRatioPct)}% saved) · " +
-                        "compress iters=${t.compressionIterations} audit iters=${t.auditIterations} · " +
-                        "steps=${t.executionOrder.size} total=${t.totalDurationMs}ms · " +
-                        "redactions=${t.redactionEvents}$resSuffix" +
+                        "Compress ×${t.compressionIterations} · Audit ×${t.auditIterations}\n" +
+                        "Time: ${seconds(t.totalDurationMs)} · Steps: ${t.executionOrder.size} · " +
+                        "Redactions: ${redactions(t.redactionEvents)}$resSuffix" +
                         skippedNote(t.skippedSteps)
                 )
             }
@@ -78,8 +78,8 @@ object RunResultFormat {
                 Triple(
                     mode + "BLOCKED (heat=${result.heat}): ${result.reason}",
                     "(nothing sent anywhere)",
-                    "total=${result.telemetry.totalDurationMs}ms · " +
-                        "redactions=${result.telemetry.redactionEvents}$resSuffix" +
+                    "Time: ${seconds(result.telemetry.totalDurationMs)} · " +
+                        "Redactions: ${redactions(result.telemetry.redactionEvents)}$resSuffix" +
                         skippedNote(result.telemetry.skippedSteps)
                 )
             }
@@ -88,13 +88,18 @@ object RunResultFormat {
                 Triple(
                     mode + "FALLBACK: ${result.reason}",
                     result.sanitizedPrompt,
-                    "maxRetriesExhausted=${t.maxRetriesExhausted} · " +
-                        "compress iters=${t.compressionIterations} audit iters=${t.auditIterations} · " +
-                        "steps=${t.executionOrder.size} total=${t.totalDurationMs}ms · " +
-                        "redactions=${t.redactionEvents}$resSuffix" +
-                        skippedNote(t.skippedSteps)
+                    "Compress ×${t.compressionIterations} · Audit ×${t.auditIterations} · " +
+                        "Time: ${seconds(t.totalDurationMs)} · Steps: ${t.executionOrder.size} · " +
+                        "Redactions: ${redactions(t.redactionEvents)}" +
+                        (if (t.maxRetriesExhausted) " · retries exhausted" else "") +
+                        resSuffix + skippedNote(t.skippedSteps)
                 )
             }
         }
     }
+
+    private fun seconds(ms: Long): String = "%.1fs".format(ms / 1000.0)
+
+    private fun redactions(events: List<String>): String =
+        if (events.isEmpty()) "none" else events.joinToString(", ")
 }

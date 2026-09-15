@@ -88,6 +88,17 @@ class DemoActivity : Activity() {
             updateModelSection()
         }
 
+        // Force-all only applies to the gated pipeline; with bypass on the
+        // switch hides so it can never suggest otherwise.
+        fun syncForceSwitch() {
+            val bypassed = bypassSwitch.isChecked
+            if (bypassed) forceAllSwitch.isChecked = false
+            forceAllSwitch.visibility = if (bypassed) View.GONE else View.VISIBLE
+            forceAllSwitch.isEnabled = !bypassed
+        }
+        syncForceSwitch()
+        bypassSwitch.setOnCheckedChangeListener { _, _ -> syncForceSwitch() }
+
         downloadButton.setOnClickListener {
             val spec = modelUrl.text.toString().trim()
             if (spec.isBlank()) {
@@ -121,8 +132,17 @@ class DemoActivity : Activity() {
                         return
                     }
                     InferenceService.ACTION_INFER_PROGRESS -> {
-                        statusView.text = intent.getStringExtra(InferenceService.EXTRA_LINE)
-                            ?: statusView.text
+                        val line = intent.getStringExtra(InferenceService.EXTRA_LINE)
+                            ?: return
+                        statusView.text = line
+                        // Completed stage lines grow the timeline live (with
+                        // the container's layout animation); the in-progress
+                        // "…querying" lines only move the status above. The
+                        // authoritative numbered render on DONE replaces these.
+                        liveStepItem(line)?.let { item ->
+                            lastSteps = lastSteps + item
+                            addStepRow(stepsView, lastSteps.size - 1, item)
+                        }
                         return
                     }
                     InferenceService.ACTION_INFER_DEBUG -> {
@@ -210,6 +230,10 @@ class DemoActivity : Activity() {
                 statusView.text = "No local model — tap Download (no token needed) or adb push a folder."
                 return@setOnClickListener
             }
+            if (InferenceService.isRunning) {
+                statusView.text = "A run is already in progress — wait for it to finish."
+                return@setOnClickListener
+            }
             // The run lives in a foreground service: minimizing, rotating,
             // or leaving the app never stops inference. Stage lines and the
             // final result arrive back here as broadcasts.
@@ -226,57 +250,84 @@ class DemoActivity : Activity() {
 
     private fun renderSteps(container: LinearLayout, items: List<RunResultFormat.StepItem>) {
         container.removeAllViews()
-        items.forEachIndexed { index, item ->
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(0, 6, 0, 6)
-            }
-            val circle = TextView(this).apply {
-                text = "${index + 1}"
-                gravity = android.view.Gravity.CENTER
-                textSize = 12f
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                val size = (28 * resources.displayMetrics.density).toInt()
-                layoutParams = LinearLayout.LayoutParams(size, size).apply {
-                    marginEnd = (10 * resources.displayMetrics.density).toInt()
-                }
-                when (item.kind) {
-                    "skip" -> {
-                        setBackgroundResource(R.drawable.circle_skip)
-                        setTextColor(getColor(R.color.gatekeeper_muted))
-                    }
-                    "fail" -> {
-                        setBackgroundResource(R.drawable.circle_fail)
-                        setTextColor(getColor(R.color.gatekeeper_navy))
-                    }
-                    else -> {
-                        setBackgroundResource(R.drawable.circle_done)
-                        setTextColor(getColor(R.color.gatekeeper_navy))
-                    }
-                }
-            }
-            val texts = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-            val title = TextView(this).apply {
-                text = item.label
-                textSize = 14f
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                setTextColor(getColor(R.color.gatekeeper_text))
-            }
-            texts.addView(title)
-            if (item.detail.isNotBlank()) {
-                texts.addView(TextView(this).apply {
-                    text = item.detail
-                    textSize = 12f
-                    setTextColor(getColor(R.color.gatekeeper_muted))
-                })
-            }
-            row.addView(circle)
-            row.addView(texts)
-            container.addView(row)
+        items.forEachIndexed { index, item -> addStepRow(container, index, item) }
+    }
+
+    private fun addStepRow(container: LinearLayout, index: Int, item: RunResultFormat.StepItem) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 6, 0, 6)
         }
+        val circle = TextView(this).apply {
+            text = "${index + 1}"
+            gravity = android.view.Gravity.CENTER
+            textSize = 12f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            val size = (28 * resources.displayMetrics.density).toInt()
+            layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                marginEnd = (10 * resources.displayMetrics.density).toInt()
+            }
+            when (item.kind) {
+                "skip" -> {
+                    setBackgroundResource(R.drawable.circle_skip)
+                    setTextColor(getColor(R.color.gatekeeper_muted))
+                }
+                "fail" -> {
+                    setBackgroundResource(R.drawable.circle_fail)
+                    setTextColor(getColor(R.color.gatekeeper_navy))
+                }
+                else -> {
+                    setBackgroundResource(R.drawable.circle_done)
+                    setTextColor(getColor(R.color.gatekeeper_navy))
+                }
+            }
+        }
+        val texts = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val title = TextView(this).apply {
+            text = item.label
+            textSize = 14f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setTextColor(getColor(R.color.gatekeeper_text))
+        }
+        texts.addView(title)
+        if (item.detail.isNotBlank()) {
+            texts.addView(TextView(this).apply {
+                text = item.detail
+                textSize = 12f
+                setTextColor(getColor(R.color.gatekeeper_muted))
+            })
+        }
+        row.addView(circle)
+        row.addView(texts)
+        container.addView(row)
+    }
+
+    // Maps a live status line to a finished timeline row. In-progress lines
+    // ("…querying LLM…", "Loading…", "Answering…") return null — they move
+    // the status text only, until their ✓/Skip/Done line lands.
+    private fun liveStepItem(line: String): RunResultFormat.StepItem? {
+        val t = line.trim()
+        // Duplicate-tap echo carries an old status line — status only, never
+        // a timeline row, or finished steps would duplicate.
+        if (t.endsWith("(run already in progress…)")) return null
+        // Strip the "[ORT native] "/"[MediaPipe] " mode prefix the service adds.
+        val body = t.substringAfter("] ", t).trim()
+        if (body.contains("✓")) {
+            val label = body.substringBefore("✓").trim().trimEnd(':').ifBlank { "Step" }
+            return RunResultFormat.StepItem("done", label, body.substringAfter("✓").trim())
+        }
+        if (body.startsWith("Skip")) {
+            return RunResultFormat.StepItem(
+                "skip", "Skipped", body.removePrefix("Skip").trim().trimStart(':').trim()
+            )
+        }
+        if (body.startsWith("Done")) {
+            return RunResultFormat.StepItem("done", "Done", body.removePrefix("Done").trim().trimStart('✓').trim())
+        }
+        return null
     }
 
     private fun stepsText(): String =
