@@ -27,6 +27,8 @@ import com.forgerig.gatekeeper.ort.OrtGenAiClient
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 
 class DemoActivity : Activity() {
@@ -36,6 +38,11 @@ class DemoActivity : Activity() {
     private var localEngine: GatekeeperEngine? = null
     private var cachedClient: InferenceClient? = null
     private var cachedModelPath: String? = null
+    // Guards check-then-act in acquireClient: the Run tap (Main) and the
+    // background prewarm job (IO) can otherwise both miss the cache and
+    // build two native engines, leaking one.
+    private val clientLock = Mutex()
+    private var lastAcquireReused = false
     private var warmupJob: kotlinx.coroutines.Job? = null
     private var downloadReceiver: BroadcastReceiver? = null
 
@@ -194,7 +201,7 @@ class DemoActivity : Activity() {
                         else -> -1L
                     }
                     val warmLine = buildString {
-                        append("Ready")
+                        if (lastAcquireReused) append("Reusing warm backend") else append("Ready")
                         if (!provider.isNullOrBlank()) append(" ($provider)")
                         if (warmMs >= 0) append(" in ${warmMs}ms")
                         append(" — generating…")
@@ -203,6 +210,7 @@ class DemoActivity : Activity() {
                     android.util.Log.i(
                         "GatekeeperDemo",
                         "acquire backend=${if (model.isDirectory) "ort" else "litert"} " +
+                            "reused=$lastAcquireReused " +
                             "provider=${provider ?: "mediapipe"} ms=$warmMs"
                     )
 
@@ -244,14 +252,20 @@ class DemoActivity : Activity() {
     // One warmed client per model path, kept open across Run taps: native
     // init + session load happen once (background prewarm), never on the Run
     // path. Only a model switch, a failed run, or destroy closes it.
-    private fun acquireClient(model: File): InferenceClient {
-        val path = model.absolutePath
-        cachedClient?.takeIf { cachedModelPath == path }?.let { return it }
-        (cachedClient as? AutoCloseable)?.let { runCatching { it.close() } }
-        cachedClient = null
-        cachedModelPath = null
-        return getClient(model).also { cachedClient = it; cachedModelPath = path }
-    }
+    // Suspend + locked: Run tap and prewarm job must not double-create.
+    private suspend fun acquireClient(model: File): InferenceClient =
+        clientLock.withLock {
+            val path = model.absolutePath
+            cachedClient?.takeIf { cachedModelPath == path }?.let {
+                lastAcquireReused = true
+                return@withLock it
+            }
+            (cachedClient as? AutoCloseable)?.let { runCatching { it.close() } }
+            cachedClient = null
+            cachedModelPath = null
+            lastAcquireReused = false
+            getClient(model).also { cachedClient = it; cachedModelPath = path }
+        }
 
     private fun prewarmBackend() {
         val model = pickLocalModel() ?: return
