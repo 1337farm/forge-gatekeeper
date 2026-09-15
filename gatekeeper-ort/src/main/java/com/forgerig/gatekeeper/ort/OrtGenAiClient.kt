@@ -60,17 +60,23 @@ class OrtGenAiClient(
 
     // First-touch init keeps cold start off the Activity path and logs the
     // one-time cost (GenAI model/tokenizer load) separately from decode.
+    // Synchronized: one thread wins init, the rest await the same handle —
+    // no double nativeInit, no leaked engines, no races on `handle`.
+    private val initLock = Any()
+
     suspend fun warmup(): Long = withContext(Dispatchers.IO) {
-        if (handle != 0L) return@withContext lastWarmupMs
-        val start = android.os.SystemClock.elapsedRealtime()
-        handle = LlmBridge.nativeInit(modelDir.absolutePath, useXnnpack)
-        activeProvider = LlmBridge.nativeGetProvider(handle)
-        lastWarmupMs = android.os.SystemClock.elapsedRealtime() - start
-        Log.i(
-            "OrtGenAiClient",
-            "warmup provider=$activeProvider model=${modelDir.name} ms=${lastWarmupMs}"
-        )
-        lastWarmupMs
+        synchronized(initLock) {
+            if (handle != 0L) return@withContext lastWarmupMs
+            val start = android.os.SystemClock.elapsedRealtime()
+            handle = LlmBridge.nativeInit(modelDir.absolutePath, useXnnpack)
+            activeProvider = LlmBridge.nativeGetProvider(handle)
+            lastWarmupMs = android.os.SystemClock.elapsedRealtime() - start
+            Log.i(
+                "OrtGenAiClient",
+                "warmup provider=$activeProvider model=${modelDir.name} ms=${lastWarmupMs}"
+            )
+            lastWarmupMs
+        }
     }
 
     override suspend fun generate(systemPrompt: String, userContent: String): String =
