@@ -43,7 +43,11 @@ class GatekeeperEngine(
         // Live stage lines ("Scrub ✓ …", "Stage A … (12.3s)"): the demo
         // forwards these to the status view so a 25s run never looks stuck.
         // Library consumers that don't need UI leave the default no-op.
-        onProgress: (String) -> Unit = {}
+        onProgress: (String) -> Unit = {},
+        // Per-LLM-call debug events (label, "request"/"response", payload):
+        // the demo mirrors these into its on-screen debug log and logcat.
+        // Same truncation policy as the log lines below.
+        onLlmEvent: (label: String, direction: String, text: String) -> Unit = { _, _, _ -> }
     ): GatekeeperResult {
         val t0 = System.currentTimeMillis()
         fun elapsed(): String = "%.1fs".format((System.currentTimeMillis() - t0) / 1000.0)
@@ -125,7 +129,7 @@ class GatekeeperEngine(
         val s3 = System.currentTimeMillis()
         onProgress("Stage A security eval: querying LLM…")
         val stageA: StageAPayload = try {
-            val raw = guardedInference(SystemPrompts.securityPrompt(), sanitized, config, breaker, "stageA")
+            val raw = guardedInference(SystemPrompts.securityPrompt(), sanitized, config, breaker, "stageA", onLlmEvent)
             parseStageA(extractJson(raw))
         } catch (e: TimeoutCancellationException) {
             breaker.recordFailure()
@@ -192,6 +196,7 @@ class GatekeeperEngine(
             val why = if (!config.enableStageB) "disabled by config" else "no ambient PII"
             rec(GatekeeperStep.STAGE_B_PII_REDACTION, StepStatus.SKIPPED, why)
             skipped[GatekeeperStep.STAGE_B_PII_REDACTION.name] = why
+            onProgress("Skip Stage B: $why (${elapsed()})")
         }
 
         if (!config.enableCompression) {
@@ -199,6 +204,7 @@ class GatekeeperEngine(
             skipped[GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION.name] = "disabled by config"
             rec(GatekeeperStep.STAGE_D_ACCURACY_AUDIT, StepStatus.SKIPPED, "compression disabled")
             skipped[GatekeeperStep.STAGE_D_ACCURACY_AUDIT.name] = "compression disabled"
+            onProgress("Skip compress+audit: disabled by config (${elapsed()})")
             val post = TokenEstimator.count(working)
             return GatekeeperResult.Success(working, sanitized, heat, ledger(post))
         }
@@ -242,7 +248,9 @@ class GatekeeperEngine(
             logUser: String = userContent
         ): String {
             val start = System.currentTimeMillis()
-            Log.i(tag, "$label request system=${clip(systemPrompt, 300)} user=${clip(logUser, 1500)}")
+            val reqLine = "$label request system=${clip(systemPrompt, 300)} user=${clip(logUser, 1500)}"
+            Log.i(tag, reqLine)
+            onLlmEvent(label, "request", reqLine)
             val timed = if (inference is TimedInferenceClient) {
                 (inference as TimedInferenceClient).generateTimed(systemPrompt, userContent)
             } else null
@@ -250,7 +258,9 @@ class GatekeeperEngine(
             inferCalls++
             inferMs += timed?.generationMs ?: (System.currentTimeMillis() - start)
             inferTokens += timed?.completionTokens ?: (text.length / 4)
-            Log.i(tag, "$label response (${text.length} chars): ${clip(text, 1500)}")
+            val resLine = "$label response (${text.length} chars): ${clip(text, 1500)}"
+            Log.i(tag, resLine)
+            onLlmEvent(label, "response", resLine)
             return text
         }
 
@@ -391,7 +401,8 @@ class GatekeeperEngine(
     private suspend fun guardedInference(
         systemPrompt: String, userContent: String,
         config: GatekeeperConfig, breaker: CircuitBreaker,
-        label: String = "infer"
+        label: String = "infer",
+        onLlmEvent: (label: String, direction: String, text: String) -> Unit = { _, _, _ -> }
     ): String {
         fun clip(s: String, n: Int): String =
             if (s.length <= n) s else s.take(n) + "…<${s.length - n} more chars>"
@@ -404,11 +415,15 @@ class GatekeeperEngine(
             throw e
         }
         try {
-            Log.i(tag, "$label request system=${clip(systemPrompt, 300)} user=${clip(userContent, 1500)}")
+            val reqLine = "$label request system=${clip(systemPrompt, 300)} user=${clip(userContent, 1500)}"
+            Log.i(tag, reqLine)
+            onLlmEvent(label, "request", reqLine)
             val out = withTimeout(config.npuExecutionTimeoutMs) {
                 inference.generate(systemPrompt, userContent)
             }
-            Log.i(tag, "$label response (${out.length} chars): ${clip(out, 1500)}")
+            val resLine = "$label response (${out.length} chars): ${clip(out, 1500)}"
+            Log.i(tag, resLine)
+            onLlmEvent(label, "response", resLine)
             return out
         } catch (e: TimeoutCancellationException) {
             breaker.recordFailure()

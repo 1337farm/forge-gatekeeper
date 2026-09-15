@@ -49,16 +49,18 @@ class InferenceService : Service() {
         }
         val prompt = intent.getStringExtra(EXTRA_PROMPT).orEmpty()
         val bypass = intent.getBooleanExtra(EXTRA_BYPASS, false)
+        val forceAll = intent.getBooleanExtra(EXTRA_FORCE_ALL, false)
         if (prompt.isBlank()) return START_NOT_STICKY
         isRunning = true
         lastStatus = "Running on-device…"
         lastOutput = ""
         lastTelemetry = ""
-        runInference(prompt, bypass)
+        lastDebug = ""
+        runInference(prompt, bypass, forceAll)
         return START_NOT_STICKY
     }
 
-    private fun runInference(prompt: String, bypass: Boolean) {
+    private fun runInference(prompt: String, bypass: Boolean, forceAll: Boolean) {
         scope.launch {
             val nm = getSystemService(NotificationManager::class.java)
             val id = 1
@@ -91,9 +93,25 @@ class InferenceService : Service() {
                     finish(nm, id, true, "$mode RAW (gatekeeper bypassed)", rawResult, telemetry)
                 } else {
                     val engine = GatekeeperEngine(applicationContext, client)
-                    val result = engine.processPrompt(rawPrompt = prompt, config = GatekeeperConfig()) { line ->
-                        publish("$mode$line", nm, id)
-                    }
+                    // forceAll overrides every config-driven skip (Stage B,
+                    // compression, audit, tiny-input short-circuit) so every
+                    // step runs — except hardware-ineligible and malicious
+                    // blocks, which stay fail-safe by design.
+                    val config = if (forceAll) {
+                        GatekeeperConfig(
+                            enableStageB = true,
+                            enableCompression = true,
+                            enableAudit = true,
+                            minTokensForCompression = 0
+                        )
+                    } else GatekeeperConfig()
+                    if (forceAll) debug("config", "force-all ON: Stage B + compression + audit + tiny inputs all run")
+                    val result = engine.processPrompt(
+                        rawPrompt = prompt,
+                        config = config,
+                        onProgress = { line -> publish("$mode$line", nm, id) },
+                        onLlmEvent = { label, direction, text -> debug(label, "$direction: $text") }
+                    )
                     val res = monitor.stop()
                     // SUCCESS answers the safe prompt so the output shows a
                     // real LLM reply, not just the sanitized echo. Blocked /
@@ -124,6 +142,16 @@ class InferenceService : Service() {
                 .putExtra(EXTRA_LINE, line)
         )
         nm.notify(id, runNotification(line))
+    }
+
+    private fun debug(label: String, text: String) {
+        val line = "[$label] $text"
+        lastDebug = ((lastDebug + "\n" + line).split("\n").takeLast(MAX_DEBUG_LINES)).joinToString("\n")
+        sendBroadcast(
+            Intent(ACTION_INFER_DEBUG)
+                .setPackage(packageName)
+                .putExtra(EXTRA_DEBUG_LINE, line)
+        )
     }
 
     private fun finish(
@@ -175,15 +203,19 @@ class InferenceService : Service() {
         const val ACTION_RUN = "com.forgerig.gatekeeper.demo.action.RUN"
         const val ACTION_INFER_PROGRESS = "com.forgerig.gatekeeper.demo.action.INFER_PROGRESS"
         const val ACTION_INFER_DONE = "com.forgerig.gatekeeper.demo.action.INFER_DONE"
+        const val ACTION_INFER_DEBUG = "com.forgerig.gatekeeper.demo.action.INFER_DEBUG"
         const val EXTRA_PROMPT = "prompt"
         const val EXTRA_BYPASS = "bypass"
+        const val EXTRA_FORCE_ALL = "force_all"
         const val EXTRA_LINE = "line"
         const val EXTRA_OK = "ok"
         const val EXTRA_STATUS = "status"
         const val EXTRA_OUTPUT = "output"
         const val EXTRA_TELEMETRY = "telemetry"
+        const val EXTRA_DEBUG_LINE = "debug_line"
         private const val CHANNEL = "runs"
         private const val TAG = "InferenceService"
+        private const val MAX_DEBUG_LINES = 200
 
         @Volatile
         var isRunning: Boolean = false
@@ -197,13 +229,17 @@ class InferenceService : Service() {
         @Volatile
         var lastTelemetry: String = ""
             private set
+        @Volatile
+        var lastDebug: String = ""
+            private set
 
-        fun startRun(context: Context, prompt: String, bypass: Boolean) {
+        fun startRun(context: Context, prompt: String, bypass: Boolean, forceAll: Boolean) {
             context.startForegroundService(
                 Intent(context, InferenceService::class.java)
                     .setAction(ACTION_RUN)
                     .putExtra(EXTRA_PROMPT, prompt)
                     .putExtra(EXTRA_BYPASS, bypass)
+                    .putExtra(EXTRA_FORCE_ALL, forceAll)
             )
         }
     }

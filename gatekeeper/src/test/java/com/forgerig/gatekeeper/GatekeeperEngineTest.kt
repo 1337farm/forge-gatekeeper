@@ -187,6 +187,52 @@ class GatekeeperEngineTest {
     }
 
     @Test
+    fun `tiny input with zero floor still runs compress and audit`() = runTest {
+        var calls = 0
+        val engine = GatekeeperEngine(
+            ctx(),
+            fakeInference { _, _, _ ->
+                calls++
+                if (calls == 1) stageAJson()
+                else if (calls % 2 == 0) "SHORT: hi there"
+                else "{\"status\":\"MATCH\",\"drift_score\":0.0," +
+                    "\"dropped_constraints\":[],\"hallucinations\":[],\"corrective_feedback\":\"\"}"
+            },
+            eligible()
+        )
+        val r = engine.processPrompt("hi", GatekeeperConfig(minTokensForCompression = 0))
+        assertTrue(r is GatekeeperResult.Success)
+        assertTrue(calls > 1)
+    }
+
+    @Test
+    fun `llm events label every call request and response`() = runTest {
+        val events = mutableListOf<String>()
+        val engine = GatekeeperEngine(
+            ctx(),
+            fakeInference { _, _, n ->
+                when (n) {
+                    1 -> stageAJson()
+                    2 -> "SHORT: do X with param 42"
+                    else -> "{\"status\":\"MATCH\",\"drift_score\":0.02," +
+                        "\"dropped_constraints\":[],\"hallucinations\":[],\"corrective_feedback\":\"\"}"
+                }
+            },
+            eligible()
+        )
+        val r = engine.processPrompt(
+            "please do X with param 42 right now without delay",
+            GatekeeperConfig(),
+            onLlmEvent = { label, direction, _ -> events.add("$label:$direction") }
+        )
+        assertTrue(r is GatekeeperResult.Success)
+        assertTrue(events.contains("stageA:request"))
+        assertTrue(events.contains("stageA:response"))
+        assertTrue(events.any { it.startsWith("compress#1:") })
+        assertTrue(events.any { it.startsWith("audit#1:") })
+    }
+
+    @Test
     fun `progress callback emits every stage with timing`() = runTest {
         val lines = mutableListOf<String>()
         val engine = GatekeeperEngine(

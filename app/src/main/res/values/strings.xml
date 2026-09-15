@@ -4,6 +4,7 @@
     <string name="hint_input">Type a prompt to test…</string>
     <string name="run">Run gatekeeper</string>
     <string name="bypass_gatekeeper">Bypass gatekeeper</string>
+    <string name="force_all_steps">Force all steps (no skips)</string>
     <string name="hint_model_url">Model .task URL or a Hugging Face owner/repo[:subfolder]</string>
     <string name="hint_hf_token">HF token (optional — leave blank; only gated repos need one)</string>
     <string name="download_model">Download model</string>
