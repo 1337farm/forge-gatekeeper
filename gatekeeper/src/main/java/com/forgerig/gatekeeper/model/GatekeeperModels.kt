@@ -50,6 +50,11 @@ data class GatekeeperConfig(
     val enableStageB: Boolean = true,
     val enableCompression: Boolean = true,
     val enableAudit: Boolean = true,
+    // Inputs at or under this many (estimated) tokens skip compress+audit:
+    // there is nothing to save, and a small model asked to rewrite a
+    // 5-token greeting can only add drift (observed: 5→75 tokens, then 4
+    // failed audit rounds). Safety stages (scrub/A/B) always run.
+    val minTokensForCompression: Int = 10,
     val circuitFailureThreshold: Int = 3,
     val circuitCooldownMs: Long = 30_000L
 ) {
@@ -57,6 +62,7 @@ data class GatekeeperConfig(
         require(maxRetries in 0..5) { "maxRetries must be 0..5" }
         require(queueWaitTimeoutMs > 0) { "queueWaitTimeoutMs must be > 0" }
         require(npuExecutionTimeoutMs > 0) { "npuExecutionTimeoutMs must be > 0" }
+        require(minTokensForCompression >= 0) { "minTokensForCompression must be >= 0" }
     }
 }
 
