@@ -56,6 +56,7 @@ class InferenceService : Service() {
         lastOutput = ""
         lastTelemetry = ""
         lastDebug = ""
+        lastSteps = ArrayList()
         runInference(prompt, bypass, forceAll)
         return START_NOT_STICKY
     }
@@ -90,7 +91,10 @@ class InferenceService : Service() {
                     val res = monitor.stop()
                     val telemetry = "Gatekeeper pipeline bypassed — no sanitization, redaction, compression, or audit." +
                         (res?.let { "\n${it.summaryLine()}" } ?: "")
-                    finish(nm, id, true, "$mode RAW (gatekeeper bypassed)", rawResult, telemetry)
+                    val steps = RunResultFormat.encodeSteps(
+                        listOf(RunResultFormat.StepItem("done", "Answer", "raw LLM reply, pipeline bypassed"))
+                    )
+                    finish(nm, id, true, "$mode RAW (gatekeeper bypassed)", rawResult, telemetry, steps)
                 } else {
                     val engine = GatekeeperEngine(applicationContext, client)
                     // forceAll overrides every config-driven skip (Stage B,
@@ -123,7 +127,13 @@ class InferenceService : Service() {
                     } else null
                     val (status, output, telemetry) =
                         RunResultFormat.format(result, mode, res?.summaryLine(), answer)
-                    finish(nm, id, true, status, output, telemetry)
+                    val resultTelemetry = when (result) {
+                        is GatekeeperResult.Success -> result.telemetry
+                        is GatekeeperResult.Blocked -> result.telemetry
+                        is GatekeeperResult.FallbackRequired -> result.telemetry
+                    }
+                    val steps = RunResultFormat.encodeSteps(RunResultFormat.steps(resultTelemetry))
+                    finish(nm, id, true, status, output, telemetry, steps)
                 }
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
@@ -160,11 +170,13 @@ class InferenceService : Service() {
         ok: Boolean,
         status: String,
         output: String,
-        telemetry: String
+        telemetry: String,
+        steps: ArrayList<String> = ArrayList()
     ) {
         lastStatus = status
         lastOutput = output
         lastTelemetry = telemetry
+        lastSteps = steps
         nm.notify(id, doneNotification(ok, status))
         sendBroadcast(
             Intent(ACTION_INFER_DONE)
@@ -173,6 +185,7 @@ class InferenceService : Service() {
                 .putExtra(EXTRA_STATUS, status)
                 .putExtra(EXTRA_OUTPUT, output)
                 .putExtra(EXTRA_TELEMETRY, telemetry)
+                .putStringArrayListExtra(EXTRA_STEPS, steps)
         )
         isRunning = false
         stopSelf()
@@ -212,6 +225,7 @@ class InferenceService : Service() {
         const val EXTRA_STATUS = "status"
         const val EXTRA_OUTPUT = "output"
         const val EXTRA_TELEMETRY = "telemetry"
+        const val EXTRA_STEPS = "steps"
         const val EXTRA_DEBUG_LINE = "debug_line"
         private const val CHANNEL = "runs"
         private const val TAG = "InferenceService"
@@ -231,6 +245,9 @@ class InferenceService : Service() {
             private set
         @Volatile
         var lastDebug: String = ""
+            private set
+        @Volatile
+        var lastSteps: ArrayList<String> = ArrayList()
             private set
 
         fun startRun(context: Context, prompt: String, bypass: Boolean, forceAll: Boolean) {
