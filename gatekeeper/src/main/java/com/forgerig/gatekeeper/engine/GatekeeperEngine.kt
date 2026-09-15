@@ -200,20 +200,46 @@ class GatekeeperEngine(
         var lastDropped: List<String> = emptyList()
         var corrective = ""
         var previousFailed: String? = null
+        var inferCalls = 0
+        var inferMs = 0L
+        var inferTokens = 0
+
+        fun timeInfer(systemPrompt: String, userContent: String): String {
+            val start = System.currentTimeMillis()
+            val timed = if (inference is TimedInferenceClient) {
+                kotlinx.coroutines.runBlocking {
+                    (inference as TimedInferenceClient).generateTimed(systemPrompt, userContent)
+                }
+            } else null
+            val text = timed?.text ?: run {
+                var out = ""
+                kotlinx.coroutines.runBlocking { out = inference.generate(systemPrompt, userContent) }
+                out
+            }
+            inferCalls++
+            inferMs += timed?.generationMs ?: (System.currentTimeMillis() - start)
+            inferTokens += timed?.completionTokens ?: (text.length / 4)
+            return text
+        }
+
+        fun tpsLine(): String {
+            if (inferCalls == 0 || inferMs <= 0) return "infer calls=$inferCalls"
+            val tps = inferTokens / (inferMs / 1000.0)
+            return "infer calls=$inferCalls inferMs=$inferMs tps~${"%.1f".format(tps)}"
+        }
 
         while (compIt <= config.maxRetries) {
             val sc = System.currentTimeMillis()
             try {
-                candidate = guardedInference(
+                candidate = timeInfer(
                     SystemPrompts.compressionPrompt(),
-                    buildCompressionInput(working, corrective, previousFailed),
-                    config, breaker
+                    buildCompressionInput(working, corrective, previousFailed)
                 ).trim()
                 compIt++
                 rec(
                     GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION,
                     if (compIt > 1) StepStatus.RETRIED else StepStatus.EXECUTED,
-                    "iter=$compIt", compIt, System.currentTimeMillis() - sc
+                    "iter=$compIt ${tpsLine()}", compIt, System.currentTimeMillis() - sc
                 )
             } catch (e: TimeoutCancellationException) {
                 breaker.recordFailure()
@@ -236,10 +262,9 @@ class GatekeeperEngine(
 
             val sd = System.currentTimeMillis()
             val audit: AccuracyAuditResult = try {
-                val raw = guardedInference(
+                val raw = timeInfer(
                     SystemPrompts.auditPrompt(),
-                    "ORIGINAL:\n$working\n\nCOMPRESSED:\n$candidate",
-                    config, breaker
+                    "ORIGINAL:\n$working\n\nCOMPRESSED:\n$candidate"
                 )
                 audIt++
                 parseAudit(raw)
@@ -267,10 +292,11 @@ class GatekeeperEngine(
                 is AccuracyAuditResult.Match -> {
                     rec(
                         GatekeeperStep.STAGE_D_ACCURACY_AUDIT, StepStatus.EXECUTED,
-                        "MATCH drift=${audit.driftScore}", audIt, System.currentTimeMillis() - sd
+                        "MATCH drift=${audit.driftScore} ${tpsLine()}", audIt, System.currentTimeMillis() - sd
                     )
                     breaker.recordSuccess()
                     val post = TokenEstimator.count(candidate)
+                    Log.i(tag, "pipeline done iters=($compIt,$audIt) ${tpsLine()} totalMs=${System.currentTimeMillis() - t0}")
                     return GatekeeperResult.Success(
                         candidate, sanitized, heat,
                         ledger(post, drift = audit.driftScore, compIt = compIt, audIt = audIt)
@@ -279,6 +305,11 @@ class GatekeeperEngine(
                 is AccuracyAuditResult.Mismatch -> {
                     lastDrift = audit.driftScore
                     lastDropped = audit.droppedConstraints
+                    Log.i(
+                        tag,
+                        "audit mismatch drift=${audit.driftScore} dropped=${audit.droppedConstraints} " +
+                            "hallucinations=${audit.hallucinations} ${tpsLine()}"
+                    )
                     rec(
                         GatekeeperStep.STAGE_D_ACCURACY_AUDIT, StepStatus.RETRIED,
                         "MISMATCH drift=${audit.driftScore} dropped=${audit.droppedConstraints}",

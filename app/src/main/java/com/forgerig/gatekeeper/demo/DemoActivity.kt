@@ -169,6 +169,28 @@ class DemoActivity : Activity() {
                     val mode = if (model.isDirectory) "[ORT native] " else "[MediaPipe] "
                     closeLocalEngine()
                     val client = getClient(model)
+                    // Cold-start once here with a visible status line: native
+                    // init + session load can take seconds on a phone, and the
+                    // engine's per-stage timeouts only cover generation.
+                    statusView.text = "Loading on-device model…"
+                    val warmupMs = when (client) {
+                        is OrtGenAiClient -> client.warmup()
+                        is MediaPipeLlmClient -> client.warmup()
+                        else -> -1L
+                    }
+                    val provider = (client as? OrtGenAiClient)?.activeProvider
+                    val warmLine = buildString {
+                        append("Ready")
+                        if (!provider.isNullOrBlank()) append(" ($provider)")
+                        if (warmupMs >= 0) append(" in ${warmupMs}ms")
+                        append(" — generating…")
+                    }
+                    statusView.text = warmLine
+                    android.util.Log.i(
+                        "GatekeeperDemo",
+                        "warmup backend=${if (model.isDirectory) "ort" else "litert"} " +
+                            "provider=${provider ?: "mediapipe"} ms=$warmupMs"
+                    )
 
                     if (bypass) {
                         try {
@@ -218,18 +240,22 @@ class DemoActivity : Activity() {
                 telemetryView.text = "tokens ${t.preCompressionTokens} → ${t.postCompressionTokens} " +
                     "(${String.format("%.1f", t.compressionRatioPct)}% saved) · " +
                     "compress iters=${t.compressionIterations} audit iters=${t.auditIterations} · " +
+                    "steps=${t.executionOrder.size} total=${t.totalDurationMs}ms · " +
                     "redactions=${t.redactionEvents}"
             }
             is GatekeeperResult.Blocked -> {
                 statusView.text = mode + "BLOCKED (heat=${result.heat}): ${result.reason}"
                 outputView.text = "(nothing sent anywhere)"
-                telemetryView.text = "redactions=${result.telemetry.redactionEvents}"
+                telemetryView.text = "total=${result.telemetry.totalDurationMs}ms · " +
+                    "redactions=${result.telemetry.redactionEvents}"
             }
             is GatekeeperResult.FallbackRequired -> {
                 val t = result.telemetry
                 statusView.text = mode + "FALLBACK: ${result.reason}"
                 outputView.text = result.sanitizedPrompt
                 telemetryView.text = "maxRetriesExhausted=${t.maxRetriesExhausted} · " +
+                    "compress iters=${t.compressionIterations} audit iters=${t.auditIterations} · " +
+                    "steps=${t.executionOrder.size} total=${t.totalDurationMs}ms · " +
                     "redactions=${t.redactionEvents}"
             }
         }
