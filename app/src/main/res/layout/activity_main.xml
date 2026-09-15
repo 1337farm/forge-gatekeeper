@@ -14,9 +14,9 @@
             android:id="@+id/header"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="ForgeGatekeeper Demo"
+            android:text="GateKeeper"
             android:textColor="@color/gatekeeper_text"
-            android:textSize="24sp"
+            android:textSize="20sp"
             android:textStyle="bold" />
 
         <TextView
@@ -119,60 +119,91 @@
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
-            <EditText
-                android:id="@+id/modelUrl"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:background="@drawable/field_bg"
-                android:hint="@string/hint_model_url"
-                android:inputType="textUri"
-                android:padding="10dp"
-                android:singleLine="true"
-                android:textColor="@color/gatekeeper_text"
-                android:textColorHint="@color/gatekeeper_muted"
-                android:textSize="12sp" />
-
-            <EditText
-                android:id="@+id/hfToken"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:background="@drawable/field_bg"
-                android:hint="@string/hint_hf_token"
-                android:inputType="textPassword"
-                android:padding="10dp"
-                android:singleLine="true"
-                android:textColor="@color/gatekeeper_text"
-                android:textColorHint="@color/gatekeeper_muted"
-                android:textSize="12sp" />
-
-            <Button
-                android:id="@+id/downloadButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/btn_subtle"
-                android:text="@string/download_model"
-                android:textColor="@color/gatekeeper_mint" />
-
-            <ProgressBar
-                android:id="@+id/downloadProgress"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:max="100"
-                android:progressTint="@color/gatekeeper_mint"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/modelStatus"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
-                android:textColor="@color/gatekeeper_muted"
-                android:textSize="12sp" />
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/modelStatus"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:textColor="@color/gatekeeper_text"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/modelToggleButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/btn_subtle"
+                    android:minHeight="0dp"
+                    android:minWidth="0dp"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:paddingTop="6dp"
+                    android:paddingBottom="6dp"
+                    android:text="@string/change_model"
+                    android:textColor="@color/gatekeeper_mint"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/modelForm"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <EditText
+                    android:id="@+id/modelUrl"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/field_bg"
+                    android:hint="@string/hint_model_url"
+                    android:inputType="textUri"
+                    android:padding="10dp"
+                    android:singleLine="true"
+                    android:textColor="@color/gatekeeper_text"
+                    android:textColorHint="@color/gatekeeper_muted"
+                    android:textSize="12sp" />
+
+                <EditText
+                    android:id="@+id/hfToken"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/field_bg"
+                    android:hint="@string/hint_hf_token"
+                    android:inputType="textPassword"
+                    android:padding="10dp"
+                    android:singleLine="true"
+                    android:textColor="@color/gatekeeper_text"
+                    android:textColorHint="@color/gatekeeper_muted"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/downloadButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/btn_subtle"
+                    android:text="@string/download_model"
+                    android:textColor="@color/gatekeeper_mint" />
+
+                <ProgressBar
+                    android:id="@+id/downloadProgress"
+                    style="?android:attr/progressBarStyleHorizontal"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:max="100"
+                    android:progressTint="@color/gatekeeper_mint"
+                    android:visibility="gone" />
+            </LinearLayout>
 
             <TextView
                 android:id="@+id/updateStatus"
@@ -211,14 +242,12 @@
                 android:textSize="15sp"
                 android:textStyle="bold" />
 
-            <TextView
-                android:id="@+id/outputView"
+            <LinearLayout
+                android:id="@+id/stepsView"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:textColor="@color/gatekeeper_text"
-                android:textIsSelectable="true"
-                android:textSize="15sp" />
+                android:orientation="vertical" />
 
             <TextView
                 android:id="@+id/telemetryView"
@@ -239,6 +268,15 @@
                 android:textIsSelectable="true"
                 android:textSize="10sp"
                 android:typeface="monospace" />
+
+            <TextView
+                android:id="@+id/outputView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:textColor="@color/gatekeeper_text"
+                android:textIsSelectable="true"
+                android:textSize="15sp" />
         </LinearLayout>
     </LinearLayout>
 </ScrollView>

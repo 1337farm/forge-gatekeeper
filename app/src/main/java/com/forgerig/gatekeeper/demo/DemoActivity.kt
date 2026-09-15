@@ -13,6 +13,7 @@ import android.os.Bundle
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
@@ -28,6 +29,11 @@ class DemoActivity : Activity() {
     private val scope = MainScope()
 
     private var downloadReceiver: BroadcastReceiver? = null
+    // Model form starts expanded only when there is nothing on disk; once
+    // a model exists the card collapses to a one-line summary + Change.
+    private var modelFormExpanded = false
+    // Last decoded timeline rows (mirrors stepsView) for Copy + re-attach.
+    private var lastSteps: List<RunResultFormat.StepItem> = emptyList()
 
     private fun capabilityLine(): String {
         val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
@@ -62,15 +68,25 @@ class DemoActivity : Activity() {
         val downloadButton = findViewById<Button>(R.id.downloadButton)
         val downloadProgress = findViewById<ProgressBar>(R.id.downloadProgress)
         val modelStatus = findViewById<TextView>(R.id.modelStatus)
+        val modelToggleButton = findViewById<Button>(R.id.modelToggleButton)
+        val modelForm = findViewById<View>(R.id.modelForm)
         val updateStatus = findViewById<TextView>(R.id.updateStatus)
+        val stepsView = findViewById<LinearLayout>(R.id.stepsView)
 
         modelUrl.setText(ModelDownloader.DEFAULT_ORT_REF)
+        modelFormExpanded = ModelFiles.pick(filesDir) == null
+        updateModelSection()
         refreshModelStatus(modelStatus)
         checkForUpdate(updateStatus)
         maybeAutoDownloadModel(modelStatus, downloadProgress, downloadButton)
         // Model already on disk (restart, reinstall-over-data): warm it now
         // in the background so the first Run tap is hot, not cold.
         prewarmBackend()
+
+        modelToggleButton.setOnClickListener {
+            modelFormExpanded = !modelFormExpanded
+            updateModelSection()
+        }
 
         downloadButton.setOnClickListener {
             val spec = modelUrl.text.toString().trim()
@@ -126,6 +142,11 @@ class DemoActivity : Activity() {
                             ?: statusView.text
                         outputView.text = intent.getStringExtra(InferenceService.EXTRA_OUTPUT).orEmpty()
                         telemetryView.text = intent.getStringExtra(InferenceService.EXTRA_TELEMETRY).orEmpty()
+                        lastSteps = RunResultFormat.decodeSteps(
+                            intent.getStringArrayListExtra(InferenceService.EXTRA_STEPS)
+                                ?: emptyList()
+                        )
+                        renderSteps(stepsView, lastSteps)
                         if (ok) Toast.makeText(this@DemoActivity, "Run finished.", Toast.LENGTH_SHORT).show()
                         return
                     }
@@ -144,7 +165,10 @@ class DemoActivity : Activity() {
                     if (ok) {
                         Toast.makeText(this@DemoActivity, "Model ready.", Toast.LENGTH_SHORT).show()
                         // New bytes may mean a different model: drop any cached
-                        // handle before re-picking and prewarming.
+                        // handle before re-picking and prewarming, then fold
+                        // the form away — the summary line carries it now.
+                        modelFormExpanded = false
+                        updateModelSection()
                         scope.launch(Dispatchers.IO) {
                             BackendCache.drop()
                             prewarmBackend()
@@ -162,7 +186,8 @@ class DemoActivity : Activity() {
             val output = outputView.text.toString()
             val telemetry = telemetryView.text.toString()
             val debug = debugLogView.text.toString()
-            val payload = listOf(caps, status, output, telemetry, debug)
+            val steps = stepsText()
+            val payload = listOf(caps, status, steps, output, telemetry, debug)
                 .map { it.trim() }
                 .filter { it.isNotEmpty() && it != "Idle." }
                 .joinToString("\n\n")
@@ -193,9 +218,71 @@ class DemoActivity : Activity() {
             outputView.text = ""
             telemetryView.text = ""
             debugLogView.text = ""
+            stepsView.removeAllViews()
+            lastSteps = emptyList()
             InferenceService.startRun(this, raw, bypassSwitch.isChecked, forceAllSwitch.isChecked)
         }
     }
+
+    private fun renderSteps(container: LinearLayout, items: List<RunResultFormat.StepItem>) {
+        container.removeAllViews()
+        items.forEachIndexed { index, item ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, 6, 0, 6)
+            }
+            val circle = TextView(this).apply {
+                text = "${index + 1}"
+                gravity = android.view.Gravity.CENTER
+                textSize = 12f
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                val size = (28 * resources.displayMetrics.density).toInt()
+                layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                    marginEnd = (10 * resources.displayMetrics.density).toInt()
+                }
+                when (item.kind) {
+                    "skip" -> {
+                        setBackgroundResource(R.drawable.circle_skip)
+                        setTextColor(getColor(R.color.gatekeeper_muted))
+                    }
+                    "fail" -> {
+                        setBackgroundResource(R.drawable.circle_fail)
+                        setTextColor(getColor(R.color.gatekeeper_navy))
+                    }
+                    else -> {
+                        setBackgroundResource(R.drawable.circle_done)
+                        setTextColor(getColor(R.color.gatekeeper_navy))
+                    }
+                }
+            }
+            val texts = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val title = TextView(this).apply {
+                text = item.label
+                textSize = 14f
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                setTextColor(getColor(R.color.gatekeeper_text))
+            }
+            texts.addView(title)
+            if (item.detail.isNotBlank()) {
+                texts.addView(TextView(this).apply {
+                    text = item.detail
+                    textSize = 12f
+                    setTextColor(getColor(R.color.gatekeeper_muted))
+                })
+            }
+            row.addView(circle)
+            row.addView(texts)
+            container.addView(row)
+        }
+    }
+
+    private fun stepsText(): String =
+        lastSteps.mapIndexed { i, s ->
+            "${i + 1}. ${s.label} — ${s.detail}".trim().trimEnd('—').trim()
+        }.joinToString("\n")
 
     private fun prewarmBackend() {
         scope.launch(Dispatchers.IO) {
@@ -228,6 +315,8 @@ class DemoActivity : Activity() {
             findViewById<TextView>(R.id.outputView).text = InferenceService.lastOutput
             findViewById<TextView>(R.id.telemetryView).text = InferenceService.lastTelemetry
             findViewById<TextView>(R.id.debugLogView).text = InferenceService.lastDebug
+            lastSteps = RunResultFormat.decodeSteps(InferenceService.lastSteps)
+            renderSteps(findViewById(R.id.stepsView), lastSteps)
         }
     }
 
@@ -283,11 +372,20 @@ class DemoActivity : Activity() {
     private fun refreshModelStatus(modelStatus: TextView) {
         val picked = ModelFiles.pick(filesDir)
         modelStatus.text = if (picked == null) {
-            "Local model: none. Tap Download (no token needed) or adb push a model."
+            "Local model: none."
         } else if (picked.isDirectory) {
-            "Local model: ${picked.name}/ (ORT GenAI native)"
+            "Model: ${picked.name}/ (ORT GenAI native)"
         } else {
-            "Local model: ${picked.name} (${picked.length() / 1_048_576} MB, MediaPipe)"
+            "Model: ${picked.name} (${picked.length() / 1_048_576} MB, MediaPipe)"
         }
+    }
+
+    private fun updateModelSection() {
+        val form = findViewById<View>(R.id.modelForm)
+        val toggle = findViewById<Button>(R.id.modelToggleButton)
+        form.visibility = if (modelFormExpanded) View.VISIBLE else View.GONE
+        toggle.text = getString(
+            if (modelFormExpanded) R.string.hide_model_form else R.string.change_model
+        )
     }
 }
