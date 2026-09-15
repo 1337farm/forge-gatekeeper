@@ -6,23 +6,27 @@ import android.os.Debug
 import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 
 // Task-manager-style sampler for one Run tap: polls our own process CPU +
 // memory on a background cadence from button press until the run finishes,
-// then reports peak/avg CPU%, peak/avg private dirty RSS, GC count, and the
+// then reports peak/avg CPU%, peak/avg private dirty RSS, and the
 // device-wide free RAM delta. Process CPU comes from /proc deltas (2 samples
 // per tick, so first tick always reads 0); memory from Debug.getMemoryInfo.
-// Coroutine-proof: sampling runs on IO with NonCancellable on stop so the
-// report is never lost to the Run scope being cancelled.
-class ResourceMonitor(private val context: Context) {
+// start() launches the sampler and returns immediately; stop() cancels,
+// joins (NonCancellable, so the report survives scope cancellation) and
+// builds the report.
+class ResourceMonitor(
+    private val context: Context,
+    private val scope: CoroutineScope
+) {
 
     data class Sample(
         val atMs: Long,
@@ -70,23 +74,6 @@ class ResourceMonitor(private val context: Context) {
         return mi.availMem / 1_048_576L
     }
 
-    private fun gcStats(): Pair<Int, Long> {
-        var count = 0
-        var ms = 0L
-        // java.lang.management is desktop-JVM only; on Android fall back to
-        // Debug thread-GC counters so unit tests (Robolectric-less JVM) and
-        // device both resolve. Runtime.gc counters are coarse but sufficient
-        // for a per-run task-manager line.
-        return try {
-            val runtime = Runtime.getRuntime()
-            val usedMb = (runtime.totalMemory() - runtime.freeMemory()) / 1_048_576L
-            Log.d("ResourceMonitor", "heap used=${usedMb}MB max=${runtime.maxMemory() / 1_048_576L}MB")
-            count to ms
-        } catch (t: Throwable) {
-            count to ms
-        }
-    }
-
     private fun procCpuMs(): Long {
         return try {
             val stat = java.io.File("/proc/self/stat").readText().split(" ")
@@ -122,23 +109,30 @@ class ResourceMonitor(private val context: Context) {
     }
 
     suspend fun start() {
-        stop(suppressReport = true)
+        // Join any previous sampler first so its samples can't interleave
+        // with the fresh run, then launch the new sampler WITHOUT waiting
+        // for it — start() must return promptly or the run never begins.
+        job?.let { old ->
+            runCatching {
+                old.cancel()
+                old.join()
+            }
+        }
+        job = null
         samples.clear()
         t0 = SystemClock.elapsedRealtime()
         prevProcCpuMs = -1L
         prevWallMs = t0
-        supervisorScope {
-            job = launch(Dispatchers.IO) {
-                while (isActive) {
-                    try {
-                        samples.add(tick())
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (t: Throwable) {
-                        Log.w("ResourceMonitor", "sample failed: ${t.message}")
-                    }
-                    delay(500)
+        job = scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                try {
+                    samples.add(tick())
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    Log.w("ResourceMonitor", "sample failed: ${t.message}")
                 }
+                delay(500)
             }
         }
     }

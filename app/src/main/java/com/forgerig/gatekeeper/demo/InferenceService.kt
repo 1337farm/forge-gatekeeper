@@ -62,7 +62,7 @@ class InferenceService : Service() {
             val nm = getSystemService(NotificationManager::class.java)
             val id = 1
             startForeground(id, runNotification("Running on-device…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-            val monitor = ResourceMonitor(this@InferenceService)
+            val monitor = ResourceMonitor(this@InferenceService, scope)
             monitor.start()
             try {
                 val model = ModelFiles.pick(filesDir)
