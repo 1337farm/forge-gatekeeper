@@ -39,9 +39,14 @@ class GatekeeperEngine(
 
     suspend fun processPrompt(
         rawPrompt: String,
-        config: GatekeeperConfig = GatekeeperConfig()
+        config: GatekeeperConfig = GatekeeperConfig(),
+        // Live stage lines ("Scrub ✓ …", "Stage A … (12.3s)"): the demo
+        // forwards these to the status view so a 25s run never looks stuck.
+        // Library consumers that don't need UI leave the default no-op.
+        onProgress: (String) -> Unit = {}
     ): GatekeeperResult {
         val t0 = System.currentTimeMillis()
+        fun elapsed(): String = "%.1fs".format((System.currentTimeMillis() - t0) / 1000.0)
         val records = mutableListOf<StepExecutionRecord>()
         val skipped = LinkedHashMap<String, String>()
         val redactionEvents = mutableListOf<String>()
@@ -59,6 +64,7 @@ class GatekeeperEngine(
             GatekeeperStep.DETERMINISTIC_SCRUB, StepStatus.EXECUTED,
             "redactions=${scrub.events.size}", 0, System.currentTimeMillis() - s1
         )
+        onProgress("Scrub ✓ ${scrub.events.size} redactions (${elapsed()})")
         val preTokens = TokenEstimator.count(sanitized)
 
         fun ledger(
@@ -114,8 +120,10 @@ class GatekeeperEngine(
             )
         }
         rec(GatekeeperStep.HARDWARE_CIRCUIT_CHECK, StepStatus.EXECUTED, "eligible", 0, System.currentTimeMillis() - s2)
+        onProgress("Hardware ✓ eligible (${elapsed()})")
 
         val s3 = System.currentTimeMillis()
+        onProgress("Stage A security eval: querying LLM…")
         val stageA: StageAPayload = try {
             val raw = guardedInference(SystemPrompts.securityPrompt(), sanitized, config, breaker)
             parseStageA(extractJson(raw))
@@ -148,6 +156,7 @@ class GatekeeperEngine(
             GatekeeperStep.STAGE_A_SECURITY_EVAL, StepStatus.EXECUTED,
             "heat=$heat injection=$injection completeness=${stageA.completeness}", 0, System.currentTimeMillis() - s3
         )
+        onProgress("Stage A ✓ heat=$heat injection=$injection (${elapsed()})")
 
         if (injection == InjectionVerdict.MALICIOUS) {
             for (s in listOf(
@@ -173,6 +182,7 @@ class GatekeeperEngine(
                     GatekeeperStep.STAGE_B_PII_REDACTION, StepStatus.EXECUTED,
                     "masked=${stageA.ambient_pii.size}", 0, System.currentTimeMillis() - s4
                 )
+                onProgress("Stage B ✓ masked ${stageA.ambient_pii.size} PII (${elapsed()})")
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
@@ -230,6 +240,7 @@ class GatekeeperEngine(
 
         while (compIt <= config.maxRetries) {
             val sc = System.currentTimeMillis()
+            onProgress("Compress iter ${compIt + 1}: querying LLM…")
             try {
                 candidate = timeInfer(
                     SystemPrompts.compressionPrompt(),
@@ -241,6 +252,7 @@ class GatekeeperEngine(
                     if (compIt > 1) StepStatus.RETRIED else StepStatus.EXECUTED,
                     "iter=$compIt ${tpsLine()}", compIt, System.currentTimeMillis() - sc
                 )
+                onProgress("Compress ✓ iter=$compIt ${tpsLine()} (${elapsed()})")
             } catch (e: TimeoutCancellationException) {
                 breaker.recordFailure()
                 rec(GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION, StepStatus.FAILED, "NPU timeout iter=$compIt")
@@ -261,6 +273,7 @@ class GatekeeperEngine(
             }
 
             val sd = System.currentTimeMillis()
+            onProgress("Audit iter ${audIt + 1}: querying LLM…")
             val audit: AccuracyAuditResult = try {
                 val raw = timeInfer(
                     SystemPrompts.auditPrompt(),
@@ -297,6 +310,7 @@ class GatekeeperEngine(
                     breaker.recordSuccess()
                     val post = TokenEstimator.count(candidate)
                     Log.i(tag, "pipeline done iters=($compIt,$audIt) ${tpsLine()} totalMs=${System.currentTimeMillis() - t0}")
+                    onProgress("Done ✓ iters=($compIt,$audIt) ${tpsLine()} (${elapsed()})")
                     return GatekeeperResult.Success(
                         candidate, sanitized, heat,
                         ledger(post, drift = audit.driftScore, compIt = compIt, audIt = audIt)
@@ -317,6 +331,7 @@ class GatekeeperEngine(
                     )
                     previousFailed = candidate
                     corrective = audit.correctiveFeedback
+                    onProgress("Audit ✗ MISMATCH drift=${audit.driftScore} — retrying (${elapsed()})")
                     if (compIt > config.maxRetries || audIt > config.maxRetries) {
                         rec(
                             GatekeeperStep.FALLBACK_TO_SANITIZED, StepStatus.EXECUTED,
