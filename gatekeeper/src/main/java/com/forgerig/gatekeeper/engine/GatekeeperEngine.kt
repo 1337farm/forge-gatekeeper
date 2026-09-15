@@ -203,6 +203,17 @@ class GatekeeperEngine(
             return GatekeeperResult.Success(working, sanitized, heat, ledger(post))
         }
 
+        val workingTokens = TokenEstimator.count(working)
+        if (workingTokens <= config.minTokensForCompression) {
+            val why = "short input ($workingTokens tokens), nothing to compress"
+            rec(GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION, StepStatus.SKIPPED, why)
+            skipped[GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION.name] = why
+            rec(GatekeeperStep.STAGE_D_ACCURACY_AUDIT, StepStatus.SKIPPED, "compression skipped")
+            skipped[GatekeeperStep.STAGE_D_ACCURACY_AUDIT.name] = "compression skipped"
+            onProgress("Skip compress+audit: $why (${elapsed()})")
+            return GatekeeperResult.Success(working, sanitized, heat, ledger(workingTokens))
+        }
+
         var candidate = working
         var compIt = 0
         var audIt = 0

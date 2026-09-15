@@ -76,7 +76,7 @@ class GatekeeperEngineTest {
             },
             eligible()
         )
-        val r = engine.processPrompt("Hello please do X with param 42 thanks", GatekeeperConfig())
+        val r = engine.processPrompt("Hello please kindly do X with param 42 thanks very much for all your help today", GatekeeperConfig())
         assertTrue(r is GatekeeperResult.Success)
         r as GatekeeperResult.Success
         assertEquals(HeatLevel.COLD, r.heat)
@@ -108,7 +108,7 @@ class GatekeeperEngineTest {
             },
             eligible()
         )
-        val r = engine.processPrompt("do X with param 42", GatekeeperConfig(maxRetries = 3))
+        val r = engine.processPrompt("please do X with param 42 right now without any delay whatsoever", GatekeeperConfig(maxRetries = 3))
         assertTrue(r is GatekeeperResult.Success)
         r as GatekeeperResult.Success
         assertTrue(r.safeCompressedPrompt.contains("42"))
@@ -132,7 +132,7 @@ class GatekeeperEngineTest {
             },
             eligible()
         )
-        val r = engine.processPrompt("do X", GatekeeperConfig(maxRetries = 1))
+        val r = engine.processPrompt("please do X right now without any delay whatsoever please", GatekeeperConfig(maxRetries = 1))
         assertTrue(r is GatekeeperResult.FallbackRequired)
         r as GatekeeperResult.FallbackRequired
         assertTrue(r.telemetry.maxRetriesExhausted)
@@ -170,6 +170,23 @@ class GatekeeperEngineTest {
     }
 
     @Test
+    fun `tiny input skips compress and audit`() = runTest {
+        var calls = 0
+        val engine = GatekeeperEngine(
+            ctx(),
+            fakeInference { _, _, _ -> calls++; stageAJson() },
+            eligible()
+        )
+        val r = engine.processPrompt("hi", GatekeeperConfig())
+        assertTrue(r is GatekeeperResult.Success)
+        r as GatekeeperResult.Success
+        assertEquals(1, calls)
+        assertEquals("hi", r.safeCompressedPrompt)
+        assertTrue(r.telemetry.skippedSteps.containsKey(GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION.name))
+        assertTrue(r.telemetry.skippedSteps.containsKey(GatekeeperStep.STAGE_D_ACCURACY_AUDIT.name))
+    }
+
+    @Test
     fun `progress callback emits every stage with timing`() = runTest {
         val lines = mutableListOf<String>()
         val engine = GatekeeperEngine(
@@ -184,7 +201,7 @@ class GatekeeperEngineTest {
             },
             eligible()
         )
-        val r = engine.processPrompt("do X with param 42", GatekeeperConfig(), lines::add)
+        val r = engine.processPrompt("please do X with param 42 right now without delay", GatekeeperConfig(), lines::add)
         assertTrue(r is GatekeeperResult.Success)
         val joined = lines.joinToString("\n")
         assertTrue(joined.contains("Scrub"))
