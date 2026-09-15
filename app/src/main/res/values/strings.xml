@@ -13,7 +13,6 @@
     <string name="copy_result">Copy result</string>
     <string name="copied">Copied.</string>
     <string name="nothing_to_copy">Nothing to copy yet.</string>
-    <string name="subtitle">On-device LLM safety pipeline</string>
     <string name="section_prompt">Prompt</string>
     <string name="section_model">Model</string>
     <string name="section_result">Result</string>
