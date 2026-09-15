@@ -7,3 +7,15 @@ package com.forgerig.gatekeeper.engine
 interface InferenceClient {
     suspend fun generate(systemPrompt: String, userContent: String): String
 }
+
+// Timed generation: wall-clock decode duration plus a best-effort token
+// count so callers can render tokens/sec without touching the model.
+data class TimedGeneration(
+    val text: String,
+    val generationMs: Long,
+    val completionTokens: Int = 0
+)
+
+interface TimedInferenceClient : InferenceClient {
+    suspend fun generateTimed(systemPrompt: String, userContent: String): TimedGeneration
+}
