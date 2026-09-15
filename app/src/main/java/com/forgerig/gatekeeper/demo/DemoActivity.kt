@@ -161,7 +161,9 @@ class DemoActivity : Activity() {
             statusView.text = "Running on-device…"
             outputView.text = ""
             telemetryView.text = ""
+            val monitor = ResourceMonitor(this@DemoActivity)
             scope.launch {
+                monitor.start()
                 try {
                     val bypass = bypassSwitch.isChecked
                     val freshModel = pickLocalModel()
@@ -202,7 +204,9 @@ class DemoActivity : Activity() {
                             val rawResult = client.generate("", raw)
                             outputView.text = rawResult
                             statusView.text = "$mode RAW (gatekeeper bypassed)"
-                            telemetryView.text = "Gatekeeper pipeline bypassed — no sanitization, redaction, compression, or audit."
+                            val res = monitor.stop()
+                            telemetryView.text = "Gatekeeper pipeline bypassed — no sanitization, redaction, compression, or audit." +
+                                (res?.let { "\n${it.summaryLine()}" } ?: "")
                         } finally {
                             (client as? AutoCloseable)?.let { runCatching { it.close() } }
                         }
@@ -211,9 +215,11 @@ class DemoActivity : Activity() {
                         localEngine = engine
                         localClient = client as? AutoCloseable
                         val result = engine.processPrompt(raw, GatekeeperConfig())
-                        render(result, statusView, outputView, telemetryView, mode)
+                        val res = monitor.stop()
+                        render(result, statusView, outputView, telemetryView, mode, res?.summaryLine())
                     }
                 } catch (t: Throwable) {
+                    monitor.stop(suppressReport = true)
                     statusView.text = "Error: ${t.message}"
                 } finally {
                     runButton.isEnabled = true
@@ -268,8 +274,10 @@ class DemoActivity : Activity() {
         statusView: TextView,
         outputView: TextView,
         telemetryView: TextView,
-        mode: String
+        mode: String,
+        resourceLine: String? = null
     ) {
+        val resSuffix = resourceLine?.let { "\n$it" } ?: ""
         when (result) {
             is GatekeeperResult.Success -> {
                 val t = result.telemetry
@@ -279,13 +287,13 @@ class DemoActivity : Activity() {
                     "(${String.format("%.1f", t.compressionRatioPct)}% saved) · " +
                     "compress iters=${t.compressionIterations} audit iters=${t.auditIterations} · " +
                     "steps=${t.executionOrder.size} total=${t.totalDurationMs}ms · " +
-                    "redactions=${t.redactionEvents}"
+                    "redactions=${t.redactionEvents}$resSuffix"
             }
             is GatekeeperResult.Blocked -> {
                 statusView.text = mode + "BLOCKED (heat=${result.heat}): ${result.reason}"
                 outputView.text = "(nothing sent anywhere)"
                 telemetryView.text = "total=${result.telemetry.totalDurationMs}ms · " +
-                    "redactions=${result.telemetry.redactionEvents}"
+                    "redactions=${result.telemetry.redactionEvents}$resSuffix"
             }
             is GatekeeperResult.FallbackRequired -> {
                 val t = result.telemetry
@@ -294,7 +302,7 @@ class DemoActivity : Activity() {
                 telemetryView.text = "maxRetriesExhausted=${t.maxRetriesExhausted} · " +
                     "compress iters=${t.compressionIterations} audit iters=${t.auditIterations} · " +
                     "steps=${t.executionOrder.size} total=${t.totalDurationMs}ms · " +
-                    "redactions=${t.redactionEvents}"
+                    "redactions=${t.redactionEvents}$resSuffix"
             }
         }
     }
