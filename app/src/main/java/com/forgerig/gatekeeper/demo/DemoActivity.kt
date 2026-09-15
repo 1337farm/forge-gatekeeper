@@ -356,9 +356,11 @@ class DemoActivity : Activity() {
             registerReceiver(it, filter, RECEIVER_NOT_EXPORTED)
         }
         // Coming back mid-run (minimized/rotated): reflect the service truth
-        // instead of a stale Idle screen.
+        // instead of a stale Idle screen. The Run button always mirrors the
+        // service — a done broadcast missed while stopped must never leave
+        // it disabled with no way to send a new message.
+        findViewById<Button>(R.id.runButton).isEnabled = !InferenceService.isRunning
         if (InferenceService.isRunning) {
-            findViewById<Button>(R.id.runButton).isEnabled = false
             findViewById<TextView>(R.id.statusView).text = InferenceService.lastStatus
             findViewById<TextView>(R.id.debugLogView).text = InferenceService.lastDebug
         } else if (InferenceService.lastStatus != "Idle.") {
