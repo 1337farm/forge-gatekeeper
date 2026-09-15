@@ -214,18 +214,15 @@ class GatekeeperEngine(
         var inferMs = 0L
         var inferTokens = 0
 
-        fun timeInfer(systemPrompt: String, userContent: String): String {
+        // Suspend — never runBlocking: processPrompt runs on the caller's
+        // scope (Main in the demo), so blocking here would freeze the UI
+        // and no progress line would ever paint.
+        suspend fun timeInfer(systemPrompt: String, userContent: String): String {
             val start = System.currentTimeMillis()
             val timed = if (inference is TimedInferenceClient) {
-                kotlinx.coroutines.runBlocking {
-                    (inference as TimedInferenceClient).generateTimed(systemPrompt, userContent)
-                }
+                (inference as TimedInferenceClient).generateTimed(systemPrompt, userContent)
             } else null
-            val text = timed?.text ?: run {
-                var out = ""
-                kotlinx.coroutines.runBlocking { out = inference.generate(systemPrompt, userContent) }
-                out
-            }
+            val text = timed?.text ?: inference.generate(systemPrompt, userContent)
             inferCalls++
             inferMs += timed?.generationMs ?: (System.currentTimeMillis() - start)
             inferTokens += timed?.completionTokens ?: (text.length / 4)
