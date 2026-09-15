@@ -8,7 +8,8 @@ object RunResultFormat {
     fun format(
         result: GatekeeperResult,
         mode: String,
-        resourceLine: String? = null
+        resourceLine: String? = null,
+        answer: String? = null
     ): Triple<String, String, String> {
         val resSuffix = resourceLine?.let { "\n$it" } ?: ""
         return when (result) {
@@ -16,7 +17,8 @@ object RunResultFormat {
                 val t = result.telemetry
                 Triple(
                     mode + "SUCCESS (heat=${result.heat})",
-                    result.safeCompressedPrompt,
+                    result.safeCompressedPrompt +
+                        (answer?.let { "\n\n— Answer —\n$it" } ?: ""),
                     "tokens ${t.preCompressionTokens} → ${t.postCompressionTokens} " +
                         "(${String.format("%.1f", t.compressionRatioPct)}% saved) · " +
                         "compress iters=${t.compressionIterations} audit iters=${t.auditIterations} · " +
