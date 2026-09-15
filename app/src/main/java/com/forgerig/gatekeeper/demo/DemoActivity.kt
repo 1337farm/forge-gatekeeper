@@ -35,6 +35,9 @@ class DemoActivity : Activity() {
 
     private var localEngine: GatekeeperEngine? = null
     private var localClient: AutoCloseable? = null
+    private var cachedClient: InferenceClient? = null
+    private var cachedModelPath: String? = null
+    private var warmupJob: kotlinx.coroutines.Job? = null
     private var downloadReceiver: BroadcastReceiver? = null
 
     private fun capabilityLine(): String {
@@ -120,7 +123,10 @@ class DemoActivity : Activity() {
                     closeLocalEngine()
                     refreshModelStatus(modelStatus)
                     modelStatus.text = if (ok) "Model ready: $message" else "Download failed: $message"
-                    if (ok) Toast.makeText(this@DemoActivity, "Model ready.", Toast.LENGTH_SHORT).show()
+                    if (ok) {
+                        Toast.makeText(this@DemoActivity, "Model ready.", Toast.LENGTH_SHORT).show()
+                        prewarmBackend()
+                    }
                 }
             }
         }
@@ -168,28 +174,27 @@ class DemoActivity : Activity() {
                     val model = freshModel
                     val mode = if (model.isDirectory) "[ORT native] " else "[MediaPipe] "
                     closeLocalEngine()
-                    val client = getClient(model)
-                    // Cold-start once here with a visible status line: native
-                    // init + session load can take seconds on a phone, and the
-                    // engine's per-stage timeouts only cover generation.
-                    statusView.text = "Loading on-device model…"
-                    val warmupMs = when (client) {
-                        is OrtGenAiClient -> client.warmup()
-                        is MediaPipeLlmClient -> client.warmup()
+                    val client = acquireClient(model)
+                    // The client is already warm (background prewarm after model
+                    // arrival, or reused across runs); only first-ever touch
+                    // pays cold init, and it happens off the Run tap.
+                    val provider = (client as? OrtGenAiClient)?.activeProvider
+                    val warmMs = when (client) {
+                        is OrtGenAiClient -> client.lastWarmupMs
+                        is MediaPipeLlmClient -> client.lastWarmupMs
                         else -> -1L
                     }
-                    val provider = (client as? OrtGenAiClient)?.activeProvider
                     val warmLine = buildString {
                         append("Ready")
                         if (!provider.isNullOrBlank()) append(" ($provider)")
-                        if (warmupMs >= 0) append(" in ${warmupMs}ms")
+                        if (warmMs >= 0) append(" in ${warmMs}ms")
                         append(" — generating…")
                     }
                     statusView.text = warmLine
                     android.util.Log.i(
                         "GatekeeperDemo",
-                        "warmup backend=${if (model.isDirectory) "ort" else "litert"} " +
-                            "provider=${provider ?: "mediapipe"} ms=$warmupMs"
+                        "acquire backend=${if (model.isDirectory) "ort" else "litert"} " +
+                            "provider=${provider ?: "mediapipe"} ms=$warmMs"
                     )
 
                     if (bypass) {
@@ -222,6 +227,39 @@ class DemoActivity : Activity() {
             OrtGenAiClient(this, model)
         } else {
             MediaPipeLlmClient(this, model)
+        }
+    }
+
+    // Reuse one warmed client per model path across Run taps: native init +
+    // session load move off the Run path entirely. A prewarm job also fires
+    // when the model download completes, so the first tap usually finds the
+    // engine already hot. Model switches (or a failed/closed client) rebuild.
+    private fun acquireClient(model: File): InferenceClient {
+        val path = model.absolutePath
+        val live = cachedClient?.takeIf { cachedModelPath == path }
+        if (live != null) return live
+        localClient?.let { runCatching { it.close() } }
+        val fresh = getClient(model)
+        cachedClient = fresh
+        cachedModelPath = path
+        return fresh
+    }
+
+    private fun prewarmBackend() {
+        val model = pickLocalModel() ?: return
+        if (cachedClient != null && cachedModelPath == model.absolutePath) return
+        warmupJob?.cancel()
+        warmupJob = scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val client = acquireClient(model)
+                when (client) {
+                    is OrtGenAiClient -> client.warmup()
+                    is MediaPipeLlmClient -> client.warmup()
+                }
+            } catch (t: Throwable) {
+                cachedClient = null
+                cachedModelPath = null
+            }
         }
     }
 
@@ -277,6 +315,7 @@ class DemoActivity : Activity() {
 
     override fun onDestroy() {
         scope.cancel()
+        dropCachedClient()
         closeLocalEngine()
         super.onDestroy()
     }
@@ -348,5 +387,13 @@ class DemoActivity : Activity() {
         localClient?.let { runCatching { it.close() } }
         localClient = null
         localEngine = null
+    }
+
+    private fun dropCachedClient() {
+        warmupJob?.cancel()
+        warmupJob = null
+        cachedClient?.let { runCatching { (it as? AutoCloseable)?.close() } }
+        cachedClient = null
+        cachedModelPath = null
     }
 }
