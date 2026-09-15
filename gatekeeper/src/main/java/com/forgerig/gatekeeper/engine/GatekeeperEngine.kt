@@ -125,7 +125,7 @@ class GatekeeperEngine(
         val s3 = System.currentTimeMillis()
         onProgress("Stage A security eval: querying LLM…")
         val stageA: StageAPayload = try {
-            val raw = guardedInference(SystemPrompts.securityPrompt(), sanitized, config, breaker)
+            val raw = guardedInference(SystemPrompts.securityPrompt(), sanitized, config, breaker, "stageA")
             parseStageA(extractJson(raw))
         } catch (e: TimeoutCancellationException) {
             breaker.recordFailure()
@@ -228,8 +228,21 @@ class GatekeeperEngine(
         // Suspend — never runBlocking: processPrompt runs on the caller's
         // scope (Main in the demo), so blocking here would freeze the UI
         // and no progress line would ever paint.
-        suspend fun timeInfer(systemPrompt: String, userContent: String): String {
+        // Every call is logged with its full payload: `label` names the
+        // step, `logUser` may replace `userContent` for display only when
+        // the payload is already logged verbatim by the previous step
+        // (marked with ↳ instead of reprinting). Only scrubbed/derived
+        // text is ever logged — never the raw prompt.
+        fun clip(s: String, n: Int): String =
+            if (s.length <= n) s else s.take(n) + "…<${s.length - n} more chars>"
+        suspend fun timeInfer(
+            label: String,
+            systemPrompt: String,
+            userContent: String,
+            logUser: String = userContent
+        ): String {
             val start = System.currentTimeMillis()
+            Log.i(tag, "$label request system=${clip(systemPrompt, 300)} user=${clip(logUser, 1500)}")
             val timed = if (inference is TimedInferenceClient) {
                 (inference as TimedInferenceClient).generateTimed(systemPrompt, userContent)
             } else null
@@ -237,6 +250,7 @@ class GatekeeperEngine(
             inferCalls++
             inferMs += timed?.generationMs ?: (System.currentTimeMillis() - start)
             inferTokens += timed?.completionTokens ?: (text.length / 4)
+            Log.i(tag, "$label response (${text.length} chars): ${clip(text, 1500)}")
             return text
         }
 
@@ -251,6 +265,7 @@ class GatekeeperEngine(
             onProgress("Compress iter ${compIt + 1}: querying LLM…")
             try {
                 candidate = timeInfer(
+                    "compress#${compIt + 1}",
                     SystemPrompts.compressionPrompt(),
                     buildCompressionInput(working, corrective, previousFailed)
                 ).trim()
@@ -284,8 +299,13 @@ class GatekeeperEngine(
             onProgress("Audit iter ${audIt + 1}: querying LLM…")
             val audit: AccuracyAuditResult = try {
                 val raw = timeInfer(
+                    "audit#${audIt + 1}",
                     SystemPrompts.auditPrompt(),
-                    "ORIGINAL:\n$working\n\nCOMPRESSED:\n$candidate"
+                    "ORIGINAL:\n$working\n\nCOMPRESSED:\n$candidate",
+                    // The candidate was just logged verbatim as the compress
+                    // response feeding this step — reference it, don't reprint.
+                    logUser = "ORIGINAL:\n$working\n\nCOMPRESSED:\n" +
+                        "↳ compress iter $compIt output (logged above, fed in full)"
                 )
                 audIt++
                 parseAudit(raw)
@@ -370,8 +390,11 @@ class GatekeeperEngine(
 
     private suspend fun guardedInference(
         systemPrompt: String, userContent: String,
-        config: GatekeeperConfig, breaker: CircuitBreaker
+        config: GatekeeperConfig, breaker: CircuitBreaker,
+        label: String = "infer"
     ): String {
+        fun clip(s: String, n: Int): String =
+            if (s.length <= n) s else s.take(n) + "…<${s.length - n} more chars>"
         try {
             withTimeout(config.queueWaitTimeoutMs) {
                 npuMutex.lock()
@@ -381,9 +404,12 @@ class GatekeeperEngine(
             throw e
         }
         try {
-            return withTimeout(config.npuExecutionTimeoutMs) {
+            Log.i(tag, "$label request system=${clip(systemPrompt, 300)} user=${clip(userContent, 1500)}")
+            val out = withTimeout(config.npuExecutionTimeoutMs) {
                 inference.generate(systemPrompt, userContent)
             }
+            Log.i(tag, "$label response (${out.length} chars): ${clip(out, 1500)}")
+            return out
         } catch (e: TimeoutCancellationException) {
             breaker.recordFailure()
             throw e
