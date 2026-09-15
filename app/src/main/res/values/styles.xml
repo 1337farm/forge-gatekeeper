@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="android:Theme.Material">
+        <item name="android:windowBackground">@color/gatekeeper_bg</item>
+        <item name="android:colorBackground">@color/gatekeeper_bg</item>
+        <item name="android:textColorPrimary">@color/gatekeeper_text</item>
+        <item name="android:textColorSecondary">@color/gatekeeper_muted</item>
+        <item name="android:colorAccent">@color/gatekeeper_mint</item>
+        <item name="android:statusBarColor">@color/gatekeeper_bg</item>
+        <item name="android:navigationBarColor">@color/gatekeeper_bg</item>
+    </style>
+</resources>
