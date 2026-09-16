@@ -6,6 +6,7 @@ import com.forgerig.gatekeeper.engine.GatekeeperEngine
 import com.forgerig.gatekeeper.engine.InferenceClient
 import com.forgerig.gatekeeper.hardware.HardwareVerdict
 import com.forgerig.gatekeeper.model.GatekeeperConfig
+import com.forgerig.gatekeeper.model.AccuracyAuditResult
 import com.forgerig.gatekeeper.model.GatekeeperResult
 import com.forgerig.gatekeeper.model.GatekeeperStep
 import com.forgerig.gatekeeper.model.HeatLevel
@@ -362,5 +363,44 @@ class GatekeeperEngineTest {
             GatekeeperConfig(maxRetries = 0)
         )
         assertTrue(r is GatekeeperResult.FallbackRequired)
+    }
+
+    @Test
+    fun `multi-verdict audit goes by majority`() {
+        val engine = GatekeeperEngine(ctx(), fakeInference { _, _, _ -> "" }, eligible())
+        val raw = "{\"status\":\"MISMATCH\",\"drift_score\":0.9," +
+            "\"dropped_constraints\":[\"a\"],\"hallucinations\":[],\"corrective_feedback\":\"x\"}" +
+            "{\"status\":\"MATCH\",\"drift_score\":0.0," +
+            "\"dropped_constraints\":[],\"hallucinations\":[],\"corrective_feedback\":\"\"}" +
+            "{\"status\":\"MISMATCH\",\"drift_score\":0.7," +
+            "\"dropped_constraints\":[\"b\"],\"hallucinations\":[],\"corrective_feedback\":\"y\"}"
+        val r = engine.parseAudit(raw)
+        assertTrue(r is AccuracyAuditResult.Mismatch)
+        r as AccuracyAuditResult.Mismatch
+        assertEquals(listOf("a", "b"), r.droppedConstraints)
+    }
+
+    @Test
+    fun `unanimous match across objects matches`() {
+        val engine = GatekeeperEngine(ctx(), fakeInference { _, _, _ -> "" }, eligible())
+        val raw = "{\"status\":\"MATCH\",\"drift_score\":0.2," +
+            "\"dropped_constraints\":[],\"hallucinations\":[],\"corrective_feedback\":\"\"}" +
+            "{\"status\":\"MATCH\",\"drift_score\":0.4," +
+            "\"dropped_constraints\":[],\"hallucinations\":[],\"corrective_feedback\":\"\"}"
+        val r = engine.parseAudit(raw)
+        assertTrue(r is AccuracyAuditResult.Match)
+        r as AccuracyAuditResult.Match
+        assertEquals(0.3, r.driftScore, 1e-9)
+    }
+
+    @Test
+    fun `tied verdicts fail safe to mismatch`() {
+        val engine = GatekeeperEngine(ctx(), fakeInference { _, _, _ -> "" }, eligible())
+        val raw = "{\"status\":\"MATCH\",\"drift_score\":0.0," +
+            "\"dropped_constraints\":[],\"hallucinations\":[],\"corrective_feedback\":\"\"}" +
+            "{\"status\":\"MISMATCH\",\"drift_score\":0.8," +
+            "\"dropped_constraints\":[\"c\"],\"hallucinations\":[],\"corrective_feedback\":\"z\"}"
+        val r = engine.parseAudit(raw)
+        assertTrue(r is AccuracyAuditResult.Mismatch)
     }
 }

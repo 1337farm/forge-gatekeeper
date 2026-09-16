@@ -508,24 +508,92 @@ class GatekeeperEngine(
     }
 
     internal fun parseAudit(raw: String): AccuracyAuditResult {
-        val json = extractJson(raw)
-        try {
-            val p = JSONObject(json)
-            val status = p.optString("status")
-            val drift = p.optDouble("drift_score")
-            return if (status.equals("MATCH", true)) AccuracyAuditResult.Match(drift)
-            else AccuracyAuditResult.Mismatch(
-                drift,
-                p.optStringList("dropped_constraints"),
-                p.optStringList("hallucinations"),
-                p.optString("corrective_feedback")
-            )
-        } catch (e: Exception) {
-            // Small-model sloppiness (observed: a missing opening quote on one
-            // array element) must not nuke an 80s run. Recover the verdict
-            // with tolerant field scans; only a missing status still fails.
-            return lenientAudit(json) ?: throw e
+        val span = extractJson(raw)
+        // A malformation that breaks quote parity (observed: a missing
+        // opening quote) desyncs the string-aware scan and can yield zero
+        // objects. Fall back to the whole span so recovery is never worse
+        // than the pre-scanner behavior.
+        val bodies = extractJsonObjects(span).ifEmpty { listOf(span) }
+        val votes = bodies.mapNotNull { body ->
+            runCatching { parseAuditBody(body) }.getOrNull()
+                ?: runCatching { lenientAudit(body) }.getOrNull()
         }
+        if (votes.isEmpty()) {
+            throw IllegalArgumentException("no audit verdict in response")
+        }
+        if (votes.size == 1) return votes[0]
+        // Rambling judges emit several contradictory verdicts in one
+        // response (observed: MISMATCH/MATCH x5). Majority wins; ties fail
+        // safe to MISMATCH. Drift is averaged, lists unioned.
+        if (votes.size > 1) {
+            Log.i(tag, "audit returned ${votes.size} verdicts; majority decides")
+        }
+        val matches = votes.filterIsInstance<AccuracyAuditResult.Match>()
+        val mismatches = votes.filterIsInstance<AccuracyAuditResult.Mismatch>()
+        if (matches.size > mismatches.size) {
+            return AccuracyAuditResult.Match(matches.map { it.driftScore }.average())
+        }
+        return AccuracyAuditResult.Mismatch(
+            driftScore = votes.map {
+                when (it) {
+                    is AccuracyAuditResult.Match -> it.driftScore
+                    is AccuracyAuditResult.Mismatch -> it.driftScore
+                }
+            }.average(),
+            droppedConstraints = mismatches.flatMap { it.droppedConstraints }.distinct(),
+            hallucinations = mismatches.flatMap { it.hallucinations }.distinct(),
+            correctiveFeedback = mismatches.firstOrNull()?.correctiveFeedback.orEmpty()
+        )
+    }
+
+    private fun parseAuditBody(body: String): AccuracyAuditResult {
+        val p = JSONObject(body)
+        val status = p.optString("status")
+        val drift = p.optDouble("drift_score")
+        return if (status.equals("MATCH", true)) AccuracyAuditResult.Match(drift)
+        else AccuracyAuditResult.Mismatch(
+            drift,
+            p.optStringList("dropped_constraints"),
+            p.optStringList("hallucinations"),
+            p.optString("corrective_feedback")
+        )
+    }
+
+    // All balanced top-level {...} objects in a response, string-aware so
+    // braces inside quotes (or markdown) can't desync the scan. Powers the
+    // multi-verdict vote; unbalanced tails are skipped, never fatal.
+    internal fun extractJsonObjects(s: String): List<String> {
+        val out = mutableListOf<String>()
+        var i = 0
+        while (i < s.length) {
+            val start = s.indexOf('{', i)
+            if (start < 0) break
+            var depth = 0
+            var inStr = false
+            var esc = false
+            var j = start
+            while (j < s.length) {
+                val c = s[j]
+                if (inStr) {
+                    if (esc) esc = false
+                    else if (c == '\\') esc = true
+                    else if (c == '"') inStr = false
+                } else {
+                    if (c == '"') inStr = true
+                    else if (c == '{') depth++
+                    else if (c == '}') {
+                        depth--
+                        if (depth == 0) {
+                            out.add(s.substring(start, j + 1))
+                            break
+                        }
+                    }
+                }
+                j++
+            }
+            i = if (depth == 0 && j < s.length) j + 1 else start + 1
+        }
+        return out
     }
 
     private fun lenientAudit(json: String): AccuracyAuditResult? {
