@@ -142,10 +142,10 @@ class GatekeeperEngine(
             parseStageA(extractJson(raw))
         } catch (e: TimeoutCancellationException) {
             breaker.recordFailure()
-            rec(GatekeeperStep.STAGE_A_SECURITY_EVAL, StepStatus.FAILED, "NPU timeout")
+            rec(GatekeeperStep.STAGE_A_SECURITY_EVAL, StepStatus.FAILED, "inference timeout")
             rec(GatekeeperStep.FALLBACK_TO_SANITIZED, StepStatus.EXECUTED, "stage_a timeout")
             return GatekeeperResult.FallbackRequired(
-                sanitized, "stage_a NPU timeout",
+                sanitized, "stage_a inference timeout",
                 ledger(preTokens, fallback = "stage_a timeout")
             )
         } catch (e: CancellationException) {
@@ -348,10 +348,10 @@ class GatekeeperEngine(
                 onProgress("Compress ✓ iter=$compIt ${tpsLine()} (${elapsed()})")
             } catch (e: TimeoutCancellationException) {
                 breaker.recordFailure()
-                rec(GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION, StepStatus.FAILED, "NPU timeout iter=$compIt")
+                rec(GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION, StepStatus.FAILED, "inference timeout iter=$compIt")
                 rec(GatekeeperStep.FALLBACK_TO_SANITIZED, StepStatus.EXECUTED, "compression timeout")
                 return GatekeeperResult.FallbackRequired(
-                    sanitized, "compression NPU timeout",
+                    sanitized, "compression inference timeout",
                     ledger(preTokens, fallback = "compression timeout", compIt = compIt, audIt = audIt)
                 )
             } catch (e: CancellationException) {
@@ -381,10 +381,10 @@ class GatekeeperEngine(
                 parseAudit(raw)
             } catch (e: TimeoutCancellationException) {
                 breaker.recordFailure()
-                rec(GatekeeperStep.STAGE_D_ACCURACY_AUDIT, StepStatus.FAILED, "NPU timeout")
+                rec(GatekeeperStep.STAGE_D_ACCURACY_AUDIT, StepStatus.FAILED, "inference timeout")
                 rec(GatekeeperStep.FALLBACK_TO_SANITIZED, StepStatus.EXECUTED, "audit timeout")
                 return GatekeeperResult.FallbackRequired(
-                    sanitized, "audit NPU timeout",
+                    sanitized, "audit inference timeout",
                     ledger(preTokens, fallback = "audit timeout", compIt = compIt, audIt = audIt)
                 )
             } catch (e: CancellationException) {
