@@ -8,10 +8,12 @@ import org.junit.Test
 class SystemPromptsTest {
 
     @Test
-    fun `security prompt is strict json schema`() {
+    fun `security prompt is strict labeled lines`() {
         val p = SystemPrompts.securityPrompt()
-        assertTrue(p.contains("ONLY valid JSON"))
+        assertTrue(p.contains("HEAT:"))
+        assertTrue(p.contains("AMBIENT_PII:"))
         assertTrue(p.contains("MALICIOUS"))
+        assertFalse(p.contains("{"))
     }
 
     @Test
@@ -24,8 +26,9 @@ class SystemPromptsTest {
     @Test
     fun `audit prompt distinguishes match mismatch`() {
         val p = SystemPrompts.auditPrompt()
-        assertTrue(p.contains("MATCH|MISMATCH"))
-        assertTrue(p.contains("corrective_feedback"))
+        assertTrue(p.contains("MATCH|MISMATCH") || p.contains("STATUS:"))
+        assertTrue(p.contains("FEEDBACK"))
+        assertFalse(p.contains("{"))
     }
 
     @Test

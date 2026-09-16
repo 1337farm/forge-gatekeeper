@@ -37,6 +37,21 @@ class GatekeeperEngine(
     private val npuMutex = Mutex()
     private val tag = "ForgeGatekeeper"
 
+    private fun clip(s: String, n: Int): String =
+        if (s.length <= n) s else s.take(n) + "…<${s.length - n} more chars>"
+
+    // logcat truncates past ~4KB per call: chunk long payloads with sequence
+    // markers so full requests/responses survive intact (in-app rows were
+    // already full; this makes adb logcat match them).
+    private fun logLong(msg: String) {
+        if (msg.length <= 3500) {
+            Log.i(tag, msg)
+            return
+        }
+        val parts = msg.chunked(3500)
+        parts.forEachIndexed { i, p -> Log.i(tag, "[${i + 1}/${parts.size}] $p") }
+    }
+
     companion object {
         // Bare greetings/fillers the on-device judge mistakes for entities.
         // Compared lowercase against trimmed ambient_pii entries.
@@ -261,8 +276,6 @@ class GatekeeperEngine(
         // the payload is already logged verbatim by the previous step
         // (marked with ↳ instead of reprinting). Only scrubbed/derived
         // text is ever logged — never the raw prompt.
-        fun clip(s: String, n: Int): String =
-            if (s.length <= n) s else s.take(n) + "…<${s.length - n} more chars>"
         suspend fun timeInfer(
             label: String,
             systemPrompt: String,
@@ -270,10 +283,8 @@ class GatekeeperEngine(
             logUser: String = userContent
         ): String {
             val start = System.currentTimeMillis()
-            val reqLine = "$label request system=${clip(systemPrompt, 300)} user=${clip(logUser, 1500)}"
-            Log.i(tag, reqLine)
-            // Full payload goes to the callback (in-app step rows); logcat
-            // keeps the truncated line above (platform line limit).
+            logLong("$label request system=${clip(systemPrompt, 300)}\nuser:\n$logUser")
+            // Full payload goes to the callback (in-app step rows) as well.
             onLlmEvent(label, "request", "system:\n$systemPrompt\nuser:\n$logUser")
             val timed = if (inference is TimedInferenceClient) {
                 (inference as TimedInferenceClient).generateTimed(systemPrompt, userContent)
@@ -282,8 +293,7 @@ class GatekeeperEngine(
             inferCalls++
             inferMs += timed?.generationMs ?: (System.currentTimeMillis() - start)
             inferTokens += timed?.completionTokens ?: (text.length / 4)
-            val resLine = "$label response (${text.length} chars): ${clip(text, 1500)}"
-            Log.i(tag, resLine)
+            logLong("$label response (${text.length} chars):\n$text")
             onLlmEvent(label, "response", text)
             return text
         }
@@ -345,9 +355,9 @@ class GatekeeperEngine(
                 rec(
                     GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION,
                     if (compIt > 1) StepStatus.RETRIED else StepStatus.EXECUTED,
-                    "iter=$compIt ${tpsLine()}", compIt, System.currentTimeMillis() - sc
+                    "iter=$compIt in=${workingTokens} out=$candTokens ${tpsLine()}", compIt, System.currentTimeMillis() - sc
                 )
-                onProgress("Compress ✓ iter=$compIt ${tpsLine()} (${elapsed()})")
+                onProgress("Compress ✓ iter=$compIt in=${workingTokens} out=$candTokens ${tpsLine()} (${elapsed()})")
             } catch (e: TimeoutCancellationException) {
                 breaker.recordFailure()
                 rec(GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION, StepStatus.FAILED, "inference timeout iter=$compIt")
@@ -454,8 +464,6 @@ class GatekeeperEngine(
         label: String = "infer",
         onLlmEvent: (label: String, direction: String, text: String) -> Unit = { _, _, _ -> }
     ): String {
-        fun clip(s: String, n: Int): String =
-            if (s.length <= n) s else s.take(n) + "…<${s.length - n} more chars>"
         try {
             withTimeout(config.queueWaitTimeoutMs) {
                 npuMutex.lock()
@@ -465,14 +473,12 @@ class GatekeeperEngine(
             throw e
         }
         try {
-            val reqLine = "$label request system=${clip(systemPrompt, 300)} user=${clip(userContent, 1500)}"
-            Log.i(tag, reqLine)
+            logLong("$label request system=${clip(systemPrompt, 300)}\nuser:\n$userContent")
             onLlmEvent(label, "request", "system:\n$systemPrompt\nuser:\n$userContent")
             val out = withTimeout(config.npuExecutionTimeoutMs) {
                 inference.generate(systemPrompt, userContent)
             }
-            val resLine = "$label response (${out.length} chars): ${clip(out, 1500)}"
-            Log.i(tag, resLine)
+            logLong("$label response (${out.length} chars):\n$out")
             onLlmEvent(label, "response", out)
             return out
         } catch (e: TimeoutCancellationException) {
@@ -510,12 +516,11 @@ class GatekeeperEngine(
     }
 
     internal fun parseAudit(raw: String): AccuracyAuditResult {
-        val span = extractJson(raw)
-        // A malformation that breaks quote parity (observed: a missing
-        // opening quote) desyncs the string-aware scan and can yield zero
-        // objects. Fall back to the whole span so recovery is never worse
-        // than the pre-scanner behavior.
-        val bodies = extractJsonObjects(span).ifEmpty { listOf(span) }
+        delineatedBlocks(raw)
+            .mapNotNull { parseDelineatedAudit(it) }
+            .takeIf { it.isNotEmpty() }
+            ?.let { return combineVotes(it) }
+        val bodies = extractJsonObjects(extractJson(raw)).ifEmpty { listOf(extractJson(raw)) }
         val votes = bodies.mapNotNull { body ->
             runCatching { parseAuditBody(body) }.getOrNull()
                 ?: runCatching { lenientAudit(body) }.getOrNull()
@@ -530,6 +535,11 @@ class GatekeeperEngine(
         if (votes.size > 1) {
             Log.i(tag, "audit returned ${votes.size} verdicts; majority decides")
         }
+        return combineVotes(votes)
+    }
+
+    private fun combineVotes(votes: List<AccuracyAuditResult>): AccuracyAuditResult {
+        if (votes.size == 1) return votes[0]
         val matches = votes.filterIsInstance<AccuracyAuditResult.Match>()
         val mismatches = votes.filterIsInstance<AccuracyAuditResult.Mismatch>()
         if (matches.size > mismatches.size) {
@@ -545,6 +555,67 @@ class GatekeeperEngine(
             droppedConstraints = mismatches.flatMap { it.droppedConstraints }.distinct(),
             hallucinations = mismatches.flatMap { it.hallucinations }.distinct(),
             correctiveFeedback = mismatches.firstOrNull()?.correctiveFeedback.orEmpty()
+        )
+    }
+
+    // Labeled-line blocks ("STATUS: …", "HEAT: …"). The instructed reply
+    // format: plain lines beat JSON for small models (no quotes/braces to
+    // drop, no fences to strip). Continuation lines glue to the previous key;
+    // unknown KEY: lines glue too, so prose with colons can't desync blocks.
+    // A block starts at STATUS/HEAT; blocks without STATUS/HEAT are ignored
+    // by the verdict builders below.
+    private val DELINEATED_KEYS = setOf(
+        "STATUS", "DRIFT", "DROPPED", "HALLUCINATIONS", "FEEDBACK",
+        "HEAT", "INJECTION", "REASON", "AMBIENT_PII", "COMPLETENESS", "MISSING"
+    )
+
+    internal fun delineatedBlocks(raw: String): List<Map<String, String>> {
+        val blocks = mutableListOf<MutableMap<String, String>>()
+        var cur: MutableMap<String, String>? = null
+        var lastKey: String? = null
+        for (line in raw.lines()) {
+            val t = line.trim()
+            if (t.isEmpty() || t.startsWith("```")) continue
+            val m = Regex("^([A-Za-z_]+)\\s*:\\s*(.*)$").matchEntire(t)
+            val key = m?.groupValues?.get(1)?.uppercase()
+            if (m != null && key != null && key in DELINEATED_KEYS) {
+                if (key == "STATUS" || key == "HEAT") {
+                    cur = mutableMapOf()
+                    blocks.add(cur)
+                }
+                if (cur == null) {
+                    cur = mutableMapOf()
+                    blocks.add(cur)
+                }
+                cur[key] = m.groupValues[2].trim()
+                lastKey = key
+            } else {
+                val k = lastKey
+                val c = cur
+                if (k != null && c != null) {
+                    c[k] = ((c[k] ?: "") + " " + t).trim()
+                }
+            }
+        }
+        return blocks
+    }
+
+    private fun delineatedList(value: String?): List<String> {
+        if (value.isNullOrBlank() || value.equals("NONE", ignoreCase = true)) return emptyList()
+        return value.split(";")
+            .map { it.trim().trimStart('-').trim() }
+            .filter { it.isNotEmpty() && !it.equals("NONE", ignoreCase = true) }
+    }
+
+    private fun parseDelineatedAudit(block: Map<String, String>): AccuracyAuditResult? {
+        val status = block["STATUS"] ?: return null
+        val drift = block["DRIFT"]?.toDoubleOrNull() ?: 0.0
+        return if (status.equals("MATCH", ignoreCase = true)) AccuracyAuditResult.Match(drift)
+        else AccuracyAuditResult.Mismatch(
+            drift,
+            delineatedList(block["DROPPED"]),
+            delineatedList(block["HALLUCINATIONS"]),
+            block["FEEDBACK"].orEmpty()
         )
     }
 
@@ -627,6 +698,17 @@ class GatekeeperEngine(
     }
 
     internal fun parseStageA(raw: String): StageAPayload {
+        delineatedBlocks(raw).firstOrNull { it.containsKey("HEAT") && it.containsKey("INJECTION") }?.let { b ->
+            val pii = delineatedList(b["AMBIENT_PII"])
+            return StageAPayload(
+                heat = b["HEAT"].takeIf { !it.isNullOrBlank() } ?: "COLD",
+                injection = b["INJECTION"].takeIf { !it.isNullOrBlank() } ?: "SAFE",
+                injection_reason = b["REASON"].orEmpty(),
+                ambient_pii = pii,
+                completeness = b["COMPLETENESS"]?.takeIf { it.isNotBlank() } ?: "READY",
+                missing_context = b["MISSING"].orEmpty()
+            )
+        }
         val p = JSONObject(raw)
         return StageAPayload(
             heat = p.getString("heat"),

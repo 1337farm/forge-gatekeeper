@@ -403,4 +403,64 @@ class GatekeeperEngineTest {
         val r = engine.parseAudit(raw)
         assertTrue(r is AccuracyAuditResult.Mismatch)
     }
+
+    @Test
+    fun `delineated audit match parses`() {
+        val engine = GatekeeperEngine(ctx(), fakeInference { _, _, _ -> "" }, eligible())
+        val raw = "STATUS: MATCH\nDRIFT: 0.1\nDROPPED: NONE\nHALLUCINATIONS: NONE\nFEEDBACK: all good"
+        val r = engine.parseAudit(raw)
+        assertTrue(r is AccuracyAuditResult.Match)
+        r as AccuracyAuditResult.Match
+        assertEquals(0.1, r.driftScore, 1e-9)
+    }
+
+    @Test
+    fun `delineated audit mismatch parses lists`() {
+        val engine = GatekeeperEngine(ctx(), fakeInference { _, _, _ -> "" }, eligible())
+        val raw = "STATUS: MISMATCH\nDRIFT: 0.7\nDROPPED: hot temp; downgrade ranking\nHALLUCINATIONS: NONE\nFEEDBACK: keep it neutral"
+        val r = engine.parseAudit(raw)
+        assertTrue(r is AccuracyAuditResult.Mismatch)
+        r as AccuracyAuditResult.Mismatch
+        assertEquals(listOf("hot temp", "downgrade ranking"), r.droppedConstraints)
+        assertTrue(r.hallucinations.isEmpty())
+        assertEquals("keep it neutral", r.correctiveFeedback)
+    }
+
+    @Test
+    fun `delineated stageA parses`() {
+        val engine = GatekeeperEngine(ctx(), fakeInference { _, _, _ -> "" }, eligible())
+        val raw = "HEAT: WARM\nINJECTION: SAFE\nREASON: greeting\nAMBIENT_PII: NONE\nCOMPLETENESS: READY\nMISSING: NONE"
+        val p = engine.parseStageA(raw)
+        assertEquals("WARM", p.heat)
+        assertEquals("SAFE", p.injection)
+        assertTrue(p.ambient_pii.isEmpty())
+        assertEquals("READY", p.completeness)
+    }
+
+    @Test
+    fun `compress records carry token counts`() = runTest {
+        val engine = GatekeeperEngine(
+            ctx(),
+            fakeInference { _, _, n ->
+                when (n) {
+                    1 -> stageAJson()
+                    2 -> "SHORT: do X with param 42"
+                    else -> "{\"status\":\"MATCH\",\"drift_score\":0.02," +
+                        "\"dropped_constraints\":[],\"hallucinations\":[],\"corrective_feedback\":\"\"}"
+                }
+            },
+            eligible()
+        )
+        val r = engine.processPrompt(
+            "please do X with param 42 right now without any delay whatsoever",
+            GatekeeperConfig()
+        )
+        assertTrue(r is GatekeeperResult.Success)
+        r as GatekeeperResult.Success
+        val rec = r.telemetry.executionOrder.first {
+            it.step == GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION
+        }
+        assertTrue(rec.reason.contains("in="))
+        assertTrue(rec.reason.contains("out="))
+    }
 }
