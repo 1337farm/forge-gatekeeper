@@ -98,6 +98,7 @@ class GatekeeperEngine(
         fun ledger(
             post: Int, drift: Double? = null, dropped: List<String> = emptyList(),
             injected: Boolean = false, fallback: String? = null, maxEx: Boolean = false,
+            expansionGuardFailed: Boolean = false,
             compIt: Int = 0, audIt: Int = 0
         ): ExecutionTelemetry {
             return ExecutionTelemetry(
@@ -114,6 +115,7 @@ class GatekeeperEngine(
                 redactionEvents = redactionEvents.toList(),
                 fallbackReason = fallback,
                 maxRetriesExhausted = maxEx,
+                expansionGuardFailed = expansionGuardFailed,
                 totalDurationMs = System.currentTimeMillis() - t0
             )
         }
@@ -338,18 +340,41 @@ class GatekeeperEngine(
                 // for tiny inputs). Without this, hallucinated explanations
                 // sail to the auditor, which can rubber-stamp them MATCH.
                 val cap = maxOf(workingTokens * 3, workingTokens + 40)
-                if (candTokens > cap) {
-                    lastDropped = listOf("output expanded ${candTokens} vs ${workingTokens} input tokens")
+                // For non-tiny inputs, require actual compression: output
+                // must be shorter than input. A 21→26 token "compression"
+                // is not compression at all — the audit correctly rejects
+                // it, and retrying wastes the full budget. Fail fast.
+                val noCompression = workingTokens > 5 && candTokens >= workingTokens
+                if (candTokens > cap || noCompression) {
+                    val reason = if (noCompression) {
+                        "no compression ($candTokens vs $workingTokens input tokens)"
+                    } else {
+                        "output expanded ${candTokens} vs ${workingTokens} input tokens"
+                    }
+                    lastDropped = listOf(reason)
                     rec(
                         GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION, StepStatus.FAILED,
-                        "expansion guard tripped ($candTokens vs $workingTokens)", compIt, System.currentTimeMillis() - sc
+                        reason, compIt, System.currentTimeMillis() - sc
                     )
                     previousFailed = candidate
-                    corrective = "Output expanded instead of compressing " +
-                        "($candTokens vs $workingTokens tokens). Output MUST be " +
-                        "shorter than the input. Compress, do not explain."
-                    onProgress("Compress ✗ expanded ${candTokens} vs ${workingTokens} — retrying (${elapsed()})")
-                    if (compIt > config.maxRetries) return maxRetriesFallback()
+                    corrective = "Output MUST be shorter than the input. " +
+                        "Compress, do not explain. Target: fewer than $workingTokens tokens."
+                    onProgress("Compress ✗ $reason — retrying (${elapsed()})")
+                    if (compIt >= config.maxRetries) {
+                        rec(
+                            GatekeeperStep.FALLBACK_TO_SANITIZED, StepStatus.EXECUTED,
+                            "expansion guard failed after ${compIt + 1} attempts"
+                        )
+                        return GatekeeperResult.FallbackRequired(
+                            sanitized, "expansion guard failed; model cannot compress",
+                            ledger(
+                                preTokens, drift = lastDrift, dropped = lastDropped,
+                                fallback = "expansion guard", maxEx = true,
+                                expansionGuardFailed = true,
+                                compIt = compIt, audIt = audIt
+                            )
+                        )
+                    }
                     continue
                 }
                 rec(

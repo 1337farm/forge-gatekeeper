@@ -149,13 +149,20 @@ object RunResultFormat {
             }
             is GatekeeperResult.FallbackRequired -> {
                 val t = result.telemetry
+                val reasonLine = if (t.expansionGuardFailed) {
+                    "expansion guard failed — model cannot compress this input"
+                } else if (t.maxRetriesExhausted) {
+                    "retries exhausted"
+                } else {
+                    ""
+                }
                 Triple(
                     mode + "FALLBACK: ${result.reason}",
                     result.sanitizedPrompt,
                     "Compress ×${t.compressionIterations} · Audit ×${t.auditIterations} · " +
                         "Time: ${seconds(t.totalDurationMs)} · Steps: ${t.executionOrder.size} · " +
                         "Redactions: ${redactions(t.redactionEvents)}" +
-                        (if (t.maxRetriesExhausted) " · retries exhausted" else "") +
+                        (if (reasonLine.isNotEmpty()) " · $reasonLine" else "") +
                         resSuffix + skippedNote(t.skippedSteps)
                 )
             }

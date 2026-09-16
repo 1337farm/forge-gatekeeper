@@ -39,6 +39,7 @@ data class ExecutionTelemetry(
     val redactionEvents: List<String> = emptyList(),
     val fallbackReason: String? = null,
     val maxRetriesExhausted: Boolean = false,
+    val expansionGuardFailed: Boolean = false,
     val totalDurationMs: Long = 0L
 )
 

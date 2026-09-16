@@ -287,8 +287,9 @@ class GatekeeperEngineTest {
         assertTrue(r is GatekeeperResult.FallbackRequired)
         r as GatekeeperResult.FallbackRequired
         assertTrue(r.telemetry.maxRetriesExhausted)
+        assertTrue(r.telemetry.expansionGuardFailed)
         assertEquals(0, auditCalls)
-        assertEquals(2, compressCalls)
+        assertEquals(1, compressCalls)
     }
 
     @Test
