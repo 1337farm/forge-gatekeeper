@@ -272,6 +272,8 @@ class DemoActivity : Activity() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, 6, 0, 6)
+            isClickable = true
+            isFocusable = true
         }
         val circle = TextView(this).apply {
             text = "${index + 1}"
@@ -315,8 +317,15 @@ class DemoActivity : Activity() {
                 setTextColor(getColor(R.color.gatekeeper_muted))
             })
         }
+        val qaContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
         if (item.question.isNotBlank()) {
-            texts.addView(TextView(this).apply {
+            qaContainer.addView(TextView(this).apply {
                 text = "Q: ${item.question}"
                 textSize = 11f
                 setTextColor(getColor(R.color.gatekeeper_muted))
@@ -325,7 +334,7 @@ class DemoActivity : Activity() {
             })
         }
         if (item.answer.isNotBlank()) {
-            texts.addView(TextView(this).apply {
+            qaContainer.addView(TextView(this).apply {
                 text = "A: ${item.answer}"
                 textSize = 11f
                 setTextColor(getColor(R.color.gatekeeper_text))
@@ -333,9 +342,32 @@ class DemoActivity : Activity() {
                 setTypeface(android.graphics.Typeface.MONOSPACE)
             })
         }
+        val hasQa = item.question.isNotBlank() || item.answer.isNotBlank()
+        if (hasQa) {
+            qaContainer.visibility = View.GONE
+            texts.addView(qaContainer)
+        }
+        val icon = TextView(this).apply {
+            text = if (hasQa) "›" else ""
+            textSize = 18f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setTextColor(getColor(R.color.gatekeeper_muted))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { gravity = android.view.Gravity.CENTER }
+        }
         row.addView(circle)
         row.addView(texts)
+        row.addView(icon)
         container.addView(row)
+        if (hasQa) {
+            row.setOnClickListener {
+                val expanded = qaContainer.visibility == View.VISIBLE
+                qaContainer.visibility = if (expanded) View.GONE else View.VISIBLE
+                icon.text = if (expanded) "›" else "▼"
+            }
+        }
     }
 
     // Maps a live status line to a finished timeline row. In-progress lines
