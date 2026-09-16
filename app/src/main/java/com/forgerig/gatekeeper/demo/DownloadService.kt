@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import android.os.PowerManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -21,6 +22,7 @@ class DownloadService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var running = 0
     private var nextId = 1
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -32,7 +34,22 @@ class DownloadService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
+        releaseWakeLock()
         super.onDestroy()
+    }
+
+    private fun acquireWakeLock() {
+        wakeLock?.takeIf { it.isHeld }?.release()
+        wakeLock = (getSystemService(POWER_SERVICE) as PowerManager).newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "Gatekeeper:download"
+        )
+        wakeLock?.acquire()
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.takeIf { it.isHeld }?.release()
+        wakeLock = null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -55,6 +72,7 @@ class DownloadService : Service() {
     ) {
         running++
         val id = nextId++
+        acquireWakeLock()
         scope.launch {
             val nm = getSystemService(NotificationManager::class.java)
             startForeground(id, progressNotification(title, -1, -1), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
@@ -77,7 +95,10 @@ class DownloadService : Service() {
                 nm.notify(id, doneNotification(title, false, t.message ?: "failed"))
                 broadcast(kind, false, t.message ?: "failed")
             } finally {
-                if (--running == 0) stopSelf()
+                if (--running == 0) {
+                    releaseWakeLock()
+                    stopSelf()
+                }
             }
         }
     }

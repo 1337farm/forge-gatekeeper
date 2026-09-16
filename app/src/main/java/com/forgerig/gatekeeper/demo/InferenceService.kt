@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import com.forgerig.gatekeeper.engine.GatekeeperEngine
 import com.forgerig.gatekeeper.model.GatekeeperConfig
@@ -29,6 +30,8 @@ class InferenceService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onCreate() {
         super.onCreate()
         val channel = NotificationChannel(CHANNEL, "Runs", NotificationManager.IMPORTANCE_LOW)
@@ -37,8 +40,23 @@ class InferenceService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
+        releaseWakeLock()
         isRunning = false
         super.onDestroy()
+    }
+
+    private fun acquireWakeLock() {
+        wakeLock?.takeIf { it.isHeld }?.release()
+        wakeLock = (getSystemService(POWER_SERVICE) as PowerManager).newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "Gatekeeper:run"
+        )
+        wakeLock?.acquire()
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.takeIf { it.isHeld }?.release()
+        wakeLock = null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -59,6 +77,7 @@ class InferenceService : Service() {
         val forceAll = intent.getBooleanExtra(EXTRA_FORCE_ALL, false)
         val provider = intent.getStringExtra(EXTRA_PROVIDER) ?: PROVIDER_XNNPACK
         if (prompt.isBlank()) return START_NOT_STICKY
+        acquireWakeLock()
         isRunning = true
         lastStatus = "Running on-device…"
         lastOutput = ""
@@ -301,6 +320,7 @@ class InferenceService : Service() {
                 .putStringArrayListExtra(EXTRA_STEPS, steps)
         )
         isRunning = false
+        releaseWakeLock()
         stopSelf()
     }
 
