@@ -75,7 +75,10 @@ class InferenceService : Service() {
         val telemetry: String,
         val steps: ArrayList<String>,
         val totalMs: Long,
-        val answer: String?
+        val answer: String?,
+        // Actual EP reported by nativeGetProvider after model creation —
+        // what ORT really bound, not what was requested.
+        val provider: String?
     )
 
     private var debugTag = ""
@@ -151,6 +154,9 @@ class InferenceService : Service() {
         val warmMs = BackendCache.warmup(client)
         val provider = BackendCache.providerOf(client)
         val reused = BackendCache.lastAcquireReused
+        // Provider goes to the debug log too: the status line is transient,
+        // this is the durable record of which EP actually bound the model.
+        debug("provider", "requested=${if (useXnnpack) "XNNPACK" else "CPU"} actual=${provider ?: "?"} warmMs=$warmMs reused=$reused")
         publish(
             "$mode " + if (reused) "Reusing warm backend" else "Ready" +
                 (provider?.let { " ($it)" } ?: "") +
@@ -194,7 +200,7 @@ class InferenceService : Service() {
             is GatekeeperResult.FallbackRequired -> result.telemetry
         }
         val steps = RunResultFormat.encodeSteps(RunResultFormat.steps(resultTelemetry))
-        return LegResult(status, output, telemetry, steps, resultTelemetry.totalDurationMs, answer)
+        return LegResult(status, output, telemetry, steps, resultTelemetry.totalDurationMs, answer, provider)
     }
 
     private suspend fun runBenchmark(
@@ -217,9 +223,14 @@ class InferenceService : Service() {
         val resourceLine = res?.summaryLine()
         val summary = RunResultFormat.benchmarkSummary(cpu.totalMs, xnn.totalMs)
         Log.i(TAG, summary)
-        val output = "— CPU only (${"%.1f".format(cpu.totalMs / 1000.0)}s) —\n" +
+        Log.i(TAG, "benchmark providers: cpu=${cpu.provider} xnnpack=${xnn.provider}")
+        fun legHead(name: String, leg: LegResult): String {
+            val ms = "%.1f".format(leg.totalMs / 1000.0)
+            return "— $name (provider=${leg.provider ?: "?"}, ${ms}s) —"
+        }
+        val output = "${legHead("CPU only", cpu)}\n" +
             (cpu.answer ?: cpu.output) +
-            "\n\n— XNNPACK (${"%.1f".format(xnn.totalMs / 1000.0)}s) —\n" +
+            "\n\n${legHead("XNNPACK", xnn)}\n" +
             (xnn.answer ?: xnn.output)
         val telemetry = "— CPU only —\n${cpu.telemetry}\n— XNNPACK —\n${xnn.telemetry}\n" +
             summary + (resourceLine?.let { "\n$it" } ?: "")
