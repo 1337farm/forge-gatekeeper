@@ -508,15 +508,51 @@ class GatekeeperEngine(
     }
 
     internal fun parseAudit(raw: String): AccuracyAuditResult {
-        val p = JSONObject(extractJson(raw))
-        val status = p.optString("status")
-        val drift = p.optDouble("drift_score")
+        val json = extractJson(raw)
+        try {
+            val p = JSONObject(json)
+            val status = p.optString("status")
+            val drift = p.optDouble("drift_score")
+            return if (status.equals("MATCH", true)) AccuracyAuditResult.Match(drift)
+            else AccuracyAuditResult.Mismatch(
+                drift,
+                p.optStringList("dropped_constraints"),
+                p.optStringList("hallucinations"),
+                p.optString("corrective_feedback")
+            )
+        } catch (e: Exception) {
+            // Small-model sloppiness (observed: a missing opening quote on one
+            // array element) must not nuke an 80s run. Recover the verdict
+            // with tolerant field scans; only a missing status still fails.
+            return lenientAudit(json) ?: throw e
+        }
+    }
+
+    private fun lenientAudit(json: String): AccuracyAuditResult? {
+        val status = Regex(""""status"\s*:\s*"(MATCH|MISMATCH)"""", RegexOption.IGNORE_CASE)
+            .find(json)?.groupValues?.get(1) ?: return null
+        fun number(key: String): Double =
+            Regex(""""$key"\s*:\s*([0-9]+(?:\.[0-9]+)?)""").find(json)
+                ?.groupValues?.get(1)?.toDoubleOrNull() ?: 0.0
+        fun arrayOf(key: String): List<String> {
+            val body = Regex(
+                """"$key"\s*:\s*\[(.*?)\]"""",
+                setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+            ).find(json)?.groupValues?.get(1) ?: return emptyList()
+            return body.split(",")
+                .map { it.trim().trim('"').trim() }
+                .filter { it.isNotEmpty() }
+        }
+        fun textOf(key: String): String =
+            Regex(""""$key"\s*:\s*"(.*?)"""", RegexOption.DOT_MATCHES_ALL)
+                .find(json)?.groupValues?.get(1) ?: ""
+        val drift = number("drift_score")
         return if (status.equals("MATCH", true)) AccuracyAuditResult.Match(drift)
         else AccuracyAuditResult.Mismatch(
             drift,
-            p.optStringList("dropped_constraints"),
-            p.optStringList("hallucinations"),
-            p.optString("corrective_feedback")
+            arrayOf("dropped_constraints"),
+            arrayOf("hallucinations"),
+            textOf("corrective_feedback")
         )
     }
 
