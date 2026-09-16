@@ -41,8 +41,17 @@ class DemoActivity : Activity() {
         val mi = android.app.ActivityManager.MemoryInfo()
         am.getMemoryInfo(mi)
         val gb = mi.totalMem / 1_000_000_000.0
+        // NPU detect (display only, no execution): Hexagon HTP runtime lives
+        // in /vendor on Snapdragon devices. Absent file (or SELinux-denied
+        // read, which also reports absent) means no NPU target exists.
+        val soc = (Build.SOC_MANUFACTURER ?: "unknown") + " " + (Build.SOC_MODEL ?: "unknown")
+        val htp = runCatching {
+            listOf("/vendor/lib64/libQnnHtp.so", "/vendor/lib/libQnnHtp.so")
+                .any { java.io.File(it).exists() }
+        }.getOrDefault(false)
         return "Device: API ${android.os.Build.VERSION.SDK_INT} · " +
-            "RAM ${String.format("%.1f", gb)}GB"
+            "RAM ${String.format("%.1f", gb)}GB · SoC $soc · " +
+            if (htp) "Hexagon NPU present" else "no HTP libs (CPU/XNNPACK only)"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
