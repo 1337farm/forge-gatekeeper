@@ -62,6 +62,33 @@ class RunResultFormatTest {
     }
 
     @Test
+    fun `steps attach each turn to its own row`() {
+        val telemetry = telemetry().copy(
+            executionOrder = listOf(
+                StepExecutionRecord(0, GatekeeperStep.STAGE_A_SECURITY_EVAL, StepStatus.EXECUTED, "heat=COLD", 0, 100),
+                StepExecutionRecord(1, GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION, StepStatus.EXECUTED, "iter=1", 1, 200),
+                StepExecutionRecord(2, GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION, StepStatus.EXECUTED, "iter=2", 2, 300),
+                StepExecutionRecord(3, GatekeeperStep.STAGE_D_ACCURACY_AUDIT, StepStatus.EXECUTED, "MATCH", 1, 400)
+            )
+        )
+        val qa = mapOf(
+            "stageA" to RunResultFormat.QaTurn("qA", "aA"),
+            "compress#1" to RunResultFormat.QaTurn("qC1", "aC1"),
+            "compress#2" to RunResultFormat.QaTurn("qC2", "aC2"),
+            // Pipes, newlines and emoji must not desync rows or leak across.
+            "audit#1" to RunResultFormat.QaTurn("q|D1\n🤖", "a|D1")
+        )
+        val items = RunResultFormat.steps(telemetry, qa)
+        assertEquals("qA", items[0].question)
+        assertEquals("aA", items[0].answer)
+        assertEquals("qC1", items[1].question)
+        assertEquals("aC2", items[2].answer)
+        assertEquals("q|D1\n🤖", items[3].question)
+        assertEquals("a|D1", items[3].answer)
+        assertEquals(items, RunResultFormat.decodeSteps(RunResultFormat.encodeSteps(items)))
+    }
+
+    @Test
     fun `benchmark summary names faster leg with factor`() {
         val line = RunResultFormat.benchmarkSummary(cpuMs = 45200, xnnpackMs = 31800)
         assertTrue(line.contains("CPU 45.2s"))

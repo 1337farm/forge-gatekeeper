@@ -272,7 +272,9 @@ class GatekeeperEngine(
             val start = System.currentTimeMillis()
             val reqLine = "$label request system=${clip(systemPrompt, 300)} user=${clip(logUser, 1500)}"
             Log.i(tag, reqLine)
-            onLlmEvent(label, "request", reqLine)
+            // Full payload goes to the callback (in-app step rows); logcat
+            // keeps the truncated line above (platform line limit).
+            onLlmEvent(label, "request", "system:\n$systemPrompt\nuser:\n$logUser")
             val timed = if (inference is TimedInferenceClient) {
                 (inference as TimedInferenceClient).generateTimed(systemPrompt, userContent)
             } else null
@@ -282,7 +284,7 @@ class GatekeeperEngine(
             inferTokens += timed?.completionTokens ?: (text.length / 4)
             val resLine = "$label response (${text.length} chars): ${clip(text, 1500)}"
             Log.i(tag, resLine)
-            onLlmEvent(label, "response", resLine)
+            onLlmEvent(label, "response", text)
             return text
         }
 
@@ -465,13 +467,13 @@ class GatekeeperEngine(
         try {
             val reqLine = "$label request system=${clip(systemPrompt, 300)} user=${clip(userContent, 1500)}"
             Log.i(tag, reqLine)
-            onLlmEvent(label, "request", reqLine)
+            onLlmEvent(label, "request", "system:\n$systemPrompt\nuser:\n$userContent")
             val out = withTimeout(config.npuExecutionTimeoutMs) {
                 inference.generate(systemPrompt, userContent)
             }
             val resLine = "$label response (${out.length} chars): ${clip(out, 1500)}"
             Log.i(tag, resLine)
-            onLlmEvent(label, "response", resLine)
+            onLlmEvent(label, "response", out)
             return out
         } catch (e: TimeoutCancellationException) {
             breaker.recordFailure()

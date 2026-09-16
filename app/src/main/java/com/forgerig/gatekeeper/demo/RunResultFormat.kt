@@ -9,7 +9,20 @@ import com.forgerig.gatekeeper.model.StepStatus
 // pre-rendered strings) and anything else that displays a run outcome.
 object RunResultFormat {
     // One timeline row: kind in {done, skip, fail} drives the circle style.
-    data class StepItem(val kind: String, val label: String, val detail: String)
+    // question/answer carry that step's LLM turn, if it made one — the demo
+    // renders them labeled Q:/A: under the row so every turn reads in place.
+    data class StepItem(
+        val kind: String,
+        val label: String,
+        val detail: String,
+        val question: String = "",
+        val answer: String = ""
+    )
+
+    // Full LLM turn payloads keyed by engine label ("stageA",
+    // "compress#N", "audit#N"). Matched to rows by record type in order, so
+    // every turn's Q/A lands on exactly its own step.
+    data class QaTurn(val question: String, val answer: String)
 
     fun stepLabel(step: GatekeeperStep): String = when (step) {
         GatekeeperStep.DETERMINISTIC_SCRUB -> "Scrub"
@@ -29,23 +42,58 @@ object RunResultFormat {
 
     // Ordered timeline rows straight from the engine's execution records —
     // the demo renders one numbered circle per row, so the full prompt flow
-    // reads top to bottom with the answer last.
-    fun steps(telemetry: ExecutionTelemetry): List<StepItem> =
-        telemetry.executionOrder.map { r ->
+    // reads top to bottom with the answer last. Pass the run's QA turns to
+    // inline each step's own question and answer under its row.
+    fun steps(
+        telemetry: ExecutionTelemetry,
+        qa: Map<String, QaTurn> = emptyMap()
+    ): List<StepItem> {
+        var compressN = 0
+        var auditN = 0
+        return telemetry.executionOrder.map { r ->
             val whenPart = if (r.durationMs > 0) "%.1fs".format(r.durationMs / 1000.0) else ""
             val detail = listOf(
                 r.reason.takeIf { it.isNotBlank() },
                 whenPart.takeIf { it.isNotBlank() }
             ).filterNotNull().joinToString(" · ")
-            StepItem(stepKind(r.status), stepLabel(r.step), detail)
+            val key = when (r.step) {
+                GatekeeperStep.STAGE_A_SECURITY_EVAL -> "stageA"
+                GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION -> "compress#${++compressN}"
+                GatekeeperStep.STAGE_D_ACCURACY_AUDIT -> "audit#${++auditN}"
+                else -> ""
+            }
+            val turn = qa[key]
+            StepItem(
+                stepKind(r.status), stepLabel(r.step), detail,
+                question = turn?.question.orEmpty(),
+                answer = turn?.answer.orEmpty()
+            )
         }
+    }
+
+    // Q/A ride Base64 so model text (pipes, newlines, emoji) can never
+    // desync the "|" framing. java.util.Base64 is JVM- and Android-safe.
+    private fun b64(s: String): String =
+        java.util.Base64.getEncoder().encodeToString(s.toByteArray(Charsets.UTF_8))
+
+    private fun unb64(s: String): String? = runCatching {
+        String(java.util.Base64.getDecoder().decode(s), Charsets.UTF_8)
+    }.getOrNull()
 
     fun encodeSteps(items: List<StepItem>): ArrayList<String> =
-        ArrayList(items.map { "${it.kind}|${it.label}|${it.detail}" })
+        ArrayList(items.map { "${it.kind}|${it.label}|${it.detail}|${b64(it.question)}|${b64(it.answer)}" })
 
     fun decodeSteps(raw: List<String>): List<StepItem> = raw.mapNotNull { s ->
-        val parts = s.split("|", limit = 3)
-        if (parts.size == 3) StepItem(parts[0], parts[1], parts[2]) else null
+        val parts = s.split("|", limit = 5)
+        if (parts.size == 3) {
+            // Pre-Q/A payloads (older broadcasts): pad with blanks.
+            StepItem(parts[0], parts[1], parts[2])
+        } else if (parts.size == 5) {
+            val q = unb64(parts[3])
+            val a = unb64(parts[4])
+            if (q == null || a == null) null
+            else StepItem(parts[0], parts[1], parts[2], q, a)
+        } else null
     }
 
     fun skippedNote(skipped: Map<String, String>): String =
