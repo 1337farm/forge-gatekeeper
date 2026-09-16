@@ -316,4 +316,51 @@ class GatekeeperEngineTest {
         assertEquals("the payload here", engine.cleanCandidate(raw))
         assertEquals("plain text", engine.cleanCandidate("  plain text\n"))
     }
+
+    @Test
+    fun `malformed audit json recovers instead of falling back`() = runTest {
+        var calls = 0
+        val engine = GatekeeperEngine(
+            ctx(),
+            fakeInference { _, _, _ ->
+                calls++
+                when (calls) {
+                    1 -> stageAJson()
+                    2 -> "SHORT compressed candidate here"
+                    3 -> "```json\n{\"status\":\"MISMATCH\",\"drift_score\":0.9," +
+                        "\"dropped_constraints\":[\"personal details\",\"age restriction\",\n" +
+                        " fear-inducing language\",\"downgrading ranking\"]," +
+                        "\"hallucinations\":[],\"corrective_feedback\":\"fix it\"}\n```"
+                    4 -> "SHORT compressed candidate here, fixed"
+                    else -> "{\"status\":\"MATCH\",\"drift_score\":0.0," +
+                        "\"dropped_constraints\":[],\"hallucinations\":[],\"corrective_feedback\":\"\"}"
+                }
+            },
+            eligible()
+        )
+        val r = engine.processPrompt(
+            "please compress this fairly long instruction without any delay whatsoever",
+            GatekeeperConfig()
+        )
+        assertTrue(r is GatekeeperResult.Success)
+        r as GatekeeperResult.Success
+        assertEquals(2, r.telemetry.compressionIterations)
+        assertEquals(2, r.telemetry.auditIterations)
+    }
+
+    @Test
+    fun `audit without status still falls back`() = runTest {
+        val engine = GatekeeperEngine(
+            ctx(),
+            fakeInference { _, _, n ->
+                if (n == 1) stageAJson() else "not json at all {{{"
+            },
+            eligible()
+        )
+        val r = engine.processPrompt(
+            "please compress this fairly long instruction without any delay whatsoever",
+            GatekeeperConfig(maxRetries = 0)
+        )
+        assertTrue(r is GatekeeperResult.FallbackRequired)
+    }
 }
