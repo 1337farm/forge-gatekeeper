@@ -315,6 +315,24 @@ class DemoActivity : Activity() {
                 setTextColor(getColor(R.color.gatekeeper_muted))
             })
         }
+        if (item.question.isNotBlank()) {
+            texts.addView(TextView(this).apply {
+                text = "Q: ${item.question}"
+                textSize = 11f
+                setTextColor(getColor(R.color.gatekeeper_muted))
+                setTextIsSelectable(true)
+                setTypeface(android.graphics.Typeface.MONOSPACE)
+            })
+        }
+        if (item.answer.isNotBlank()) {
+            texts.addView(TextView(this).apply {
+                text = "A: ${item.answer}"
+                textSize = 11f
+                setTextColor(getColor(R.color.gatekeeper_text))
+                setTextIsSelectable(true)
+                setTypeface(android.graphics.Typeface.MONOSPACE)
+            })
+        }
         row.addView(circle)
         row.addView(texts)
         container.addView(row)
@@ -347,7 +365,12 @@ class DemoActivity : Activity() {
 
     private fun stepsText(): String =
         lastSteps.mapIndexed { i, s ->
-            "${i + 1}. ${s.label} — ${s.detail}".trim().trimEnd('—').trim()
+            buildString {
+                append("${i + 1}. ${s.label}")
+                if (s.detail.isNotBlank()) append(" — ${s.detail}")
+                if (s.question.isNotBlank()) append("\nQ: ${s.question}")
+                if (s.answer.isNotBlank()) append("\nA: ${s.answer}")
+            }
         }.joinToString("\n")
 
     private fun prewarmBackend() {

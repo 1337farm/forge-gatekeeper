@@ -116,7 +116,10 @@ class InferenceService : Service() {
                     val telemetry = "Gatekeeper pipeline bypassed — no sanitization, redaction, compression, or audit." +
                         (res?.let { "\n${it.summaryLine()}" } ?: "")
                     val steps = RunResultFormat.encodeSteps(
-                        listOf(RunResultFormat.StepItem("done", "Answer", "raw LLM reply, pipeline bypassed"))
+                        listOf(RunResultFormat.StepItem(
+                            "done", "Answer", "raw LLM reply, pipeline bypassed",
+                            question = prompt, answer = rawResult
+                        ))
                     )
                     finish(nm, id, true, "$mode RAW (gatekeeper bypassed)", rawResult, telemetry, steps)
                 } else {
@@ -177,11 +180,18 @@ class InferenceService : Service() {
             )
         } else GatekeeperConfig()
         if (forceAll) debug("config", "force-all ON: Stage B + compression + audit + tiny inputs all run")
+        // Full Q/A turns, keyed by engine label, joined to their timeline
+        // rows at the end — payloads live under their own step, never in a
+        // shared firehose.
+        val qaReq = mutableMapOf<String, String>()
+        val qaRes = mutableMapOf<String, String>()
         val result = engine.processPrompt(
             rawPrompt = prompt,
             config = config,
             onProgress = { line -> publish("$mode$line", nm, id) },
-            onLlmEvent = { label, direction, text -> debug(label, "$direction: $text") }
+            onLlmEvent = { label, direction, text ->
+                if (direction == "request") qaReq[label] = text else qaRes[label] = text
+            }
         )
         val resourceLine = stopSampling()
         // SUCCESS answers the safe prompt so the output shows a
@@ -199,7 +209,15 @@ class InferenceService : Service() {
             is GatekeeperResult.Blocked -> result.telemetry
             is GatekeeperResult.FallbackRequired -> result.telemetry
         }
-        val steps = RunResultFormat.encodeSteps(RunResultFormat.steps(resultTelemetry))
+        val qa = buildMap {
+            (qaReq.keys + qaRes.keys).distinct().forEach { label ->
+                put(label, RunResultFormat.QaTurn(
+                    question = qaReq[label].orEmpty(),
+                    answer = qaRes[label].orEmpty()
+                ))
+            }
+        }
+        val steps = RunResultFormat.encodeSteps(RunResultFormat.steps(resultTelemetry, qa))
         return LegResult(status, output, telemetry, steps, resultTelemetry.totalDurationMs, answer, provider)
     }
 
