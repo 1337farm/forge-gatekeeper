@@ -8,7 +8,9 @@ import com.forgerig.gatekeeper.engine.TimedInferenceClient
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.File
 
 // Device-universal local-LLM backend: runs a `.task` model (e.g. Gemma 3n)
@@ -28,6 +30,10 @@ class MediaPipeLlmClient(
         2048,
         40
     )
+
+    companion object {
+        const val WARMUP_TIMEOUT_MS = 120_000L
+    }
 
     private val app: Context = appContext.applicationContext
 
@@ -56,11 +62,21 @@ class MediaPipeLlmClient(
         private set
 
     // First-touch init keeps cold start off the Activity path and logs the
-    // one-time cost (session/model load) separately from decode.
+    // one-time cost (session/model load) separately from decode. Capped like
+    // the ORT side so a wedged session fails loudly instead of hanging.
     suspend fun warmup(): Long = withContext(Dispatchers.IO) {
         if (llmRef.isInitialized()) return@withContext lastWarmupMs
         val start = android.os.SystemClock.elapsedRealtime()
-        llm // force lazy session creation
+        try {
+            withTimeout(WARMUP_TIMEOUT_MS) {
+                llm // force lazy session creation
+            }
+        } catch (e: TimeoutCancellationException) {
+            throw IllegalStateException(
+                "On-device model load timed out after ${WARMUP_TIMEOUT_MS / 1000}s " +
+                    "— storage may be slow or ${modelFile.name} corrupt", e
+            )
+        }
         lastWarmupMs = android.os.SystemClock.elapsedRealtime() - start
         Log.i(
             "MediaPipeLlmClient",

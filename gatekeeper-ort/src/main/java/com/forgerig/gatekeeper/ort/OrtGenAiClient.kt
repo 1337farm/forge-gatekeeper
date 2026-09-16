@@ -7,7 +7,10 @@ import com.forgerig.gatekeeper.engine.TimedGeneration
 import com.forgerig.gatekeeper.engine.TimedInferenceClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.File
 
 // Bare-metal ORT GenAI backend behind the standard gatekeeper contract.
@@ -26,6 +29,10 @@ class OrtGenAiClient(
         512,
         true
     )
+
+    companion object {
+        const val WARMUP_TIMEOUT_MS = 120_000L
+    }
 
     @Suppress("unused")
     private val app: Context = appContext.applicationContext
@@ -60,15 +67,27 @@ class OrtGenAiClient(
 
     // First-touch init keeps cold start off the Activity path and logs the
     // one-time cost (GenAI model/tokenizer load) separately from decode.
-    // Synchronized: one thread wins init, the rest await the same handle —
-    // no double nativeInit, no leaked engines, no races on `handle`.
-    private val initLock = Any()
+    // Mutex-guarded: one coroutine wins init, the rest await the same
+    // handle — no double nativeInit, no leaked engines, no races on `handle`.
+    private val initLock = kotlinx.coroutines.sync.Mutex()
 
     suspend fun warmup(): Long = withContext(Dispatchers.IO) {
-        synchronized(initLock) {
+        initLock.withLock {
             if (handle != 0L) return@withContext lastWarmupMs
             val start = android.os.SystemClock.elapsedRealtime()
-            handle = LlmBridge.nativeInit(modelDir.absolutePath, useXnnpack)
+            try {
+                // Model load is pure storage IO with no bound: cap it so a
+                // wedged/corrupt folder fails loudly instead of hanging the
+                // run past every pipeline timeout.
+                withTimeout(WARMUP_TIMEOUT_MS) {
+                    handle = LlmBridge.nativeInit(modelDir.absolutePath, useXnnpack)
+                }
+            } catch (e: TimeoutCancellationException) {
+                throw IllegalStateException(
+                    "On-device model load timed out after ${WARMUP_TIMEOUT_MS / 1000}s " +
+                        "— storage may be slow or ${modelDir.name} corrupt", e
+                )
+            }
             activeProvider = LlmBridge.nativeGetProvider(handle)
             lastWarmupMs = android.os.SystemClock.elapsedRealtime() - start
             Log.i(

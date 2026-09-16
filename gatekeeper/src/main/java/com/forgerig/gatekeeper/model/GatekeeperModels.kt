@@ -45,7 +45,10 @@ data class ExecutionTelemetry(
 data class GatekeeperConfig(
     val maxRetries: Int = 3,
     val queueWaitTimeoutMs: Long = 2_000L,
-    val npuExecutionTimeoutMs: Long = 15_000L,
+    // Single-inference budget. First decode on a loaded phone routinely
+    // takes 10-20s (weight paging, not compute), so 15s fired on healthy
+    // runs; 30s keeps fail-fast without punishing cold backends.
+    val npuExecutionTimeoutMs: Long = 30_000L,
     val minRamBytes: Long = 7_500_000_000L,
     val enableStageB: Boolean = true,
     val enableCompression: Boolean = true,
