@@ -15,6 +15,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.Switch
@@ -244,7 +245,12 @@ class DemoActivity : Activity() {
             debugLogView.text = ""
             stepsView.removeAllViews()
             lastSteps = emptyList()
-            InferenceService.startRun(this, raw, bypassSwitch.isChecked, forceAllSwitch.isChecked)
+            val provider = when (findViewById<Spinner>(R.id.providerSpinner).selectedItemPosition) {
+                1 -> InferenceService.PROVIDER_CPU
+                2 -> InferenceService.PROVIDER_BOTH
+                else -> InferenceService.PROVIDER_XNNPACK
+            }
+            InferenceService.startRun(this, raw, bypassSwitch.isChecked, forceAllSwitch.isChecked, provider)
         }
     }
 

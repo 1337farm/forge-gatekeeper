@@ -52,6 +52,22 @@ object RunResultFormat {
         if (skipped.isEmpty()) "" else "\nskipped: " +
             skipped.entries.joinToString("; ") { "${it.key} (${it.value})" }
 
+    // Head-to-head line for benchmark mode (pipeline ms per leg, warmup
+    // excluded on both sides). Names the faster leg and the speedup factor.
+    fun benchmarkSummary(cpuMs: Long, xnnpackMs: Long): String {
+        fun s(ms: Long): String = "%.1fs".format(ms / 1000.0)
+        if (cpuMs <= 0 || xnnpackMs <= 0) {
+            return "Benchmark: CPU ${s(cpuMs)} vs XNNPACK ${s(xnnpackMs)} (incomplete)"
+        }
+        return if (xnnpackMs < cpuMs) {
+            "Benchmark: CPU ${s(cpuMs)} vs XNNPACK ${s(xnnpackMs)} " +
+                "(XNNPACK ${"%.1f".format(cpuMs.toDouble() / xnnpackMs)}× faster)"
+        } else {
+            "Benchmark: CPU ${s(cpuMs)} vs XNNPACK ${s(xnnpackMs)} " +
+                "(CPU ${"%.1f".format(xnnpackMs.toDouble() / cpuMs)}× faster)"
+        }
+    }
+
     fun format(
         result: GatekeeperResult,
         mode: String,
