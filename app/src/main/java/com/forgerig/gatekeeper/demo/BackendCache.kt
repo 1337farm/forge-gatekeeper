@@ -15,30 +15,36 @@ import java.io.File
 object BackendCache {
     private val lock = Mutex()
     private var client: InferenceClient? = null
-    private var modelPath: String? = null
+    private var cacheKey: String? = null
     var lastAcquireReused: Boolean = false
         private set
 
-    suspend fun acquire(appContext: Context, model: File): InferenceClient =
-        lock.withLock {
-            val path = model.absolutePath
-            client?.takeIf { modelPath == path }?.let {
-                lastAcquireReused = true
-                return@withLock it
-            }
-            (client as? AutoCloseable)?.let { runCatching { it.close() } }
-            client = null
-            modelPath = null
-            lastAcquireReused = false
-            val fresh: InferenceClient = if (model.isDirectory) {
-                OrtGenAiClient(appContext, model)
-            } else {
-                MediaPipeLlmClient(appContext, model)
-            }
-            client = fresh
-            modelPath = path
-            fresh
+    // useXnnpack selects the ORT execution provider and is part of the key,
+    // so asking for the other provider rebuilds instead of returning a
+    // handle bound to the wrong EP. (MediaPipe ignores it.)
+    suspend fun acquire(
+        appContext: Context,
+        model: File,
+        useXnnpack: Boolean = true
+    ): InferenceClient = lock.withLock {
+        val key = "${model.absolutePath}|xnnpack=$useXnnpack"
+        client?.takeIf { cacheKey == key }?.let {
+            lastAcquireReused = true
+            return@withLock it
         }
+        (client as? AutoCloseable)?.let { runCatching { it.close() } }
+        client = null
+        cacheKey = null
+        lastAcquireReused = false
+        val fresh: InferenceClient = if (model.isDirectory) {
+            OrtGenAiClient(appContext, model, useXnnpack = useXnnpack)
+        } else {
+            MediaPipeLlmClient(appContext, model)
+        }
+        client = fresh
+        cacheKey = key
+        fresh
+    }
 
     // Warms outside the lock: native init can take seconds, creation is fast.
     suspend fun warmup(client: InferenceClient): Long = when (client) {
@@ -59,6 +65,6 @@ object BackendCache {
     suspend fun drop() = lock.withLock {
         (client as? AutoCloseable)?.let { runCatching { it.close() } }
         client = null
-        modelPath = null
+        cacheKey = null
     }
 }

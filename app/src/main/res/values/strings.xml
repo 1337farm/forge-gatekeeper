@@ -16,4 +16,10 @@
     <string name="section_prompt">Prompt</string>
     <string name="section_model">Model</string>
     <string name="section_result">Result</string>
+    <string name="provider_label">Provider</string>
+    <string-array name="provider_options">
+        <item>XNNPACK (fast)</item>
+        <item>CPU only</item>
+        <item>Both — benchmark</item>
+    </string-array>
 </resources>

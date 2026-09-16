@@ -60,4 +60,14 @@ class RunResultFormatTest {
         val decoded = RunResultFormat.decodeSteps(RunResultFormat.encodeSteps(items))
         assertEquals(items, decoded)
     }
+
+    @Test
+    fun `benchmark summary names faster leg with factor`() {
+        val line = RunResultFormat.benchmarkSummary(cpuMs = 45200, xnnpackMs = 31800)
+        assertTrue(line.contains("CPU 45.2s"))
+        assertTrue(line.contains("XNNPACK 31.8s"))
+        assertTrue(line.contains("XNNPACK 1.4× faster"))
+        val flipped = RunResultFormat.benchmarkSummary(cpuMs = 20000, xnnpackMs = 40000)
+        assertTrue(flipped.contains("CPU 2.0× faster"))
+    }
 }
