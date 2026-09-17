@@ -80,7 +80,9 @@ class InferenceService : Service() {
         acquireWakeLock()
         isRunning = true
         lastStatus = "Running on-device…"
+        lastPrompt = prompt
         lastOutput = ""
+        lastAnswer = ""
         lastTelemetry = ""
         lastDebug = ""
         lastSteps = ArrayList()
@@ -112,7 +114,7 @@ class InferenceService : Service() {
             try {
                 val model = ModelFiles.pick(filesDir)
                 if (model == null) {
-                    finish(nm, id, false, "Error", "No local model — download one first.", "")
+                    finish(nm, id, false, "Error", "No local model — download one first.", "", prompt = prompt)
                     return@launch
                 }
                 val isOrt = model.isDirectory
@@ -140,19 +142,19 @@ class InferenceService : Service() {
                             question = prompt, answer = rawResult
                         ))
                     )
-                    finish(nm, id, true, "$mode RAW (gatekeeper bypassed)", rawResult, telemetry, steps)
+                    finish(nm, id, true, "$mode RAW (gatekeeper bypassed)", rawResult, telemetry, steps, prompt = prompt, answer = rawResult)
                 } else {
                     val leg = executePipeline(
                         prompt, model, useXnnpack, forceAll, mode, nm, id,
                         stopSampling = { monitor.stop()?.summaryLine() }
                     )
-                    finish(nm, id, true, leg.status, leg.output, leg.telemetry, leg.steps)
+                    finish(nm, id, true, leg.status, leg.output, leg.telemetry, leg.steps, prompt = prompt, answer = leg.answer ?: leg.output)
                 }
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
                 monitor.stop(suppressReport = true)
                 BackendCache.drop()
-                finish(nm, id, false, "Error: ${t.message}", "", "")
+                finish(nm, id, false, "Error: ${t.message}", "", "", prompt = prompt)
             }
         }
     }
@@ -273,7 +275,7 @@ class InferenceService : Service() {
             summary + (resourceLine?.let { "\n$it" } ?: "")
         // Steps shown are the final (XNNPACK) leg; both legs' full detail
         // streams in the debug log with cpu:/xnnpack: tags.
-        finish(nm, id, true, summary, output, telemetry, xnn.steps)
+        finish(nm, id, true, summary, output, telemetry, xnn.steps, prompt = prompt, answer = output)
     }
 
     private fun publish(line: String, nm: NotificationManager, id: Int) {
@@ -303,10 +305,14 @@ class InferenceService : Service() {
         status: String,
         output: String,
         telemetry: String,
-        steps: ArrayList<String> = ArrayList()
+        steps: ArrayList<String> = ArrayList(),
+        prompt: String = "",
+        answer: String = ""
     ) {
         lastStatus = status
+        lastPrompt = prompt
         lastOutput = output
+        lastAnswer = answer
         lastTelemetry = telemetry
         lastSteps = steps
         nm.notify(id, doneNotification(ok, status))
@@ -315,7 +321,9 @@ class InferenceService : Service() {
                 .setPackage(packageName)
                 .putExtra(EXTRA_OK, ok)
                 .putExtra(EXTRA_STATUS, status)
+                .putExtra(EXTRA_PROMPT, prompt)
                 .putExtra(EXTRA_OUTPUT, output)
+                .putExtra(EXTRA_ANSWER, answer)
                 .putExtra(EXTRA_TELEMETRY, telemetry)
                 .putStringArrayListExtra(EXTRA_STEPS, steps)
         )
@@ -358,6 +366,7 @@ class InferenceService : Service() {
         const val EXTRA_OK = "ok"
         const val EXTRA_STATUS = "status"
         const val EXTRA_OUTPUT = "output"
+        const val EXTRA_ANSWER = "answer"
         const val EXTRA_TELEMETRY = "telemetry"
         const val EXTRA_STEPS = "steps"
         const val EXTRA_DEBUG_LINE = "debug_line"
@@ -375,7 +384,13 @@ class InferenceService : Service() {
         var lastStatus: String = "Idle."
             private set
         @Volatile
+        var lastPrompt: String = ""
+            private set
+        @Volatile
         var lastOutput: String = ""
+            private set
+        @Volatile
+        var lastAnswer: String = ""
             private set
         @Volatile
         var lastTelemetry: String = ""

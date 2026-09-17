@@ -43,6 +43,46 @@ class RunResultFormatTest {
     }
 
     @Test
+    fun `step ui exposes safety badges and chips`() {
+        val ui = RunResultFormat.stepUi(
+            RunResultFormat.StepItem(
+                "done",
+                "Stage A · Security eval",
+                "heat=COLD injection=SAFE completeness=READY; · 10.2s",
+                "system:\nSYS\nuser:\nUSER",
+                "HEAT: COLD"
+            )
+        )
+        assertEquals("DONE", ui.statusText)
+        assertEquals("SAFETY", ui.stageText)
+        val chips = ui.chips.map { it.text }
+        assertTrue(chips.contains("SAFE"))
+        assertTrue(chips.contains("READY"))
+        assertTrue(chips.contains("COLD"))
+    }
+
+    @Test
+    fun `step ui flags no-compression guard output`() {
+        val ui = RunResultFormat.stepUi(
+            RunResultFormat.StepItem(
+                "fail",
+                "Stage C · Compression",
+                "no compression (26 vs 21 input tokens) · 18.4s"
+            )
+        )
+        assertEquals("COMPRESS", ui.stageText)
+        assertEquals("error", ui.stageTone)
+        assertTrue(ui.chips.any { it.text == "GUARD" && it.tone == "error" })
+    }
+
+    @Test
+    fun `split request separates system prompt and user text`() {
+        val split = RunResultFormat.splitRequest("system:\nSYS RULES\nuser:\nUSER TEXT")
+        assertEquals("SYS RULES", split.system)
+        assertEquals("USER TEXT", split.user)
+    }
+
+    @Test
     fun `steps timeline labels kinds and survives encode round-trip`() {
         val telemetry = telemetry().copy(
             executionOrder = listOf(

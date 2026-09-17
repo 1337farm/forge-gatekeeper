@@ -24,6 +24,107 @@ object RunResultFormat {
     // every turn's Q/A lands on exactly its own step.
     data class QaTurn(val question: String, val answer: String)
 
+    data class UiChip(val text: String, val tone: String)
+    data class StepUi(
+        val statusText: String,
+        val statusTone: String,
+        val stageText: String,
+        val stageTone: String,
+        val chips: List<UiChip>
+    )
+    data class StepRequest(val system: String, val user: String)
+
+    fun stepUi(item: StepItem): StepUi {
+        val statusText = when (item.kind) {
+            "done" -> "DONE"
+            "skip" -> "SKIPPED"
+            else -> "FAILED"
+        }
+        val statusTone = when (item.kind) {
+            "done" -> "success"
+            "skip" -> "muted"
+            else -> "warning"
+        }
+        val upper = item.detail.uppercase()
+        val stage = when {
+            item.label.startsWith("Scrub") -> "SCRUB" to "info"
+            item.label.startsWith("Hardware") -> "DEVICE" to "info"
+            item.label.startsWith("Stage A") -> "SAFETY" to "info"
+            item.label.startsWith("Stage B") -> "PII" to "info"
+            item.label.startsWith("Stage C") -> "COMPRESS" to if (item.kind == "fail") "error" else "warning"
+            item.label.startsWith("Stage D") -> "AUDIT" to when {
+                upper.contains("MISMATCH") -> "warning"
+                upper.contains("MATCH") -> "success"
+                else -> "info"
+            }
+            item.label.startsWith("Fallback") -> "FALLBACK" to "warning"
+            item.label.startsWith("Answer") -> "ANSWER" to "success"
+            item.label.startsWith("Done") -> "DONE" to "success"
+            item.label.startsWith("Skipped") -> "SKIPPED" to "muted"
+            else -> "STEP" to "muted"
+        }
+        val chips = mutableListOf<UiChip>()
+        if (upper.contains("MISMATCH")) chips.add(UiChip("MISMATCH", "warning"))
+        else if (upper.contains("MATCH")) chips.add(UiChip("MATCH", "success"))
+        if (upper.contains("MALICIOUS")) chips.add(UiChip("MALICIOUS", "error"))
+        else if (upper.contains("SAFE")) chips.add(UiChip("SAFE", "success"))
+        if (upper.contains("MISSING_CONTEXT")) chips.add(UiChip("NEEDS CONTEXT", "warning"))
+        else if (upper.contains("READY")) chips.add(UiChip("READY", "success"))
+        if (upper.contains("NO AMBIENT PII")) chips.add(UiChip("NO PII", "muted"))
+        if (upper.contains("ELIGIBLE")) chips.add(UiChip("ELIGIBLE", "success"))
+        if (upper.contains("NO COMPRESSION") || upper.contains("EXPANSION GUARD") || upper.contains("OUTPUT EXPANDED")) {
+            chips.add(UiChip("GUARD", "error"))
+        }
+        if (upper.contains("RETRIES EXHAUSTED") || upper.contains("MAXRETRIES")) chips.add(UiChip("RETRIES", "warning"))
+        if (upper.contains("TIMEOUT")) chips.add(UiChip("TIMEOUT", "error"))
+        Regex("(?i)\\bheat\\s*[:=]\\s*([A-Za-z]+)").find(item.detail)?.let {
+            val value = it.groupValues[1].uppercase()
+            chips.add(UiChip(value, when (value) {
+                "COLD" -> "info"
+                "WARM" -> "warning"
+                "HOT" -> "error"
+                else -> "muted"
+            }))
+        }
+        Regex("(?i)\\binjection\\s*[:=]\\s*([A-Za-z]+)").find(item.detail)?.let {
+            val value = it.groupValues[1].uppercase()
+            if (value != "SAFE" && value != "MALICIOUS") chips.add(UiChip(value, "muted"))
+        }
+        Regex("(?i)\\bcompleteness\\s*[:=]\\s*([A-Za-z_]+)").find(item.detail)?.let {
+            val value = it.groupValues[1].uppercase()
+            if (value != "READY" && value != "MISSING_CONTEXT") chips.add(UiChip(value, "muted"))
+        }
+        Regex("(?i)\\bdrift\\s*[:=]\\s*([0-9]+(?:\\.[0-9]+)?)").find(item.detail)?.let {
+            val drift = it.groupValues[1].toDoubleOrNull() ?: 0.0
+            chips.add(UiChip("DRIFT $drift", if (drift >= 0.5) "error" else "warning"))
+        }
+        Regex("(?i)\\bredactions\\s*[:=]\\s*(\\d+)").find(item.detail)?.let {
+            val count = it.groupValues[1].toIntOrNull() ?: 0
+            chips.add(UiChip("PII $count", if (count == 0) "muted" else "success"))
+        }
+        Regex("(?i)\\biter\\s*[:=]\\s*(\\d+)").find(item.detail)?.let {
+            chips.add(UiChip("ITER ${it.groupValues[1]}", "muted"))
+        }
+        Regex("(?i)\\bin\\s*[:=]?\\s*(\\d+)\\s+out\\s*[:=]?\\s*(\\d+)").find(item.detail)?.let {
+            val input = it.groupValues[1].toIntOrNull() ?: 0
+            val output = it.groupValues[2].toIntOrNull() ?: 0
+            val compressed = input > 0 && output in 1..input - 1
+            chips.add(UiChip("$input→$output", if (compressed) "success" else "warning"))
+        }
+        return StepUi(statusText, statusTone, stage.first, stage.second, chips.take(4))
+    }
+
+    fun splitRequest(question: String): StepRequest {
+        val text = question.trim()
+        if (text.isEmpty()) return StepRequest("", "")
+        val marker = Regex("(?im)(^|\\n)user:\\s*").find(text) ?: return StepRequest("", text)
+        var system = text.substring(0, marker.range.first).trim()
+        if (system.startsWith("system:", ignoreCase = true)) system = system.substring(7).trim()
+        var user = text.substring(marker.range.last + 1).trim()
+        if (user.startsWith("user:", ignoreCase = true)) user = user.substring(5).trim()
+        return StepRequest(system, user)
+    }
+
     fun stepLabel(step: GatekeeperStep): String = when (step) {
         GatekeeperStep.DETERMINISTIC_SCRUB -> "Scrub"
         GatekeeperStep.HARDWARE_CIRCUIT_CHECK -> "Hardware check"
