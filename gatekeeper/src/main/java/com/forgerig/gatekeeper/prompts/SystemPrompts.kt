@@ -19,7 +19,8 @@ object SystemPrompts {
             "DELETE: greetings, pleasantries, hedging, apologies, filler, passive voice, repetition. " +
             "PRESERVE EXACTLY: all technical directives, parameters, constraints, numbers, " +
             "names, code blocks, formatting, language. " +
-            "Do not add, infer, or generalize. Output compressed text ONLY, no preamble."
+            "Do not add, infer, generalize, quote, label, or give examples. " +
+            "Output compressed text ONLY, no preamble."
 
     const val AUDIT_PLAINTEXT =
         "You are a strict semantic auditor. Compare ORIGINAL vs COMPRESSED. " +

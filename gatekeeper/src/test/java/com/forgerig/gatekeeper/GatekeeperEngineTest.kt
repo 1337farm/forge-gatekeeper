@@ -320,6 +320,28 @@ class GatekeeperEngineTest {
     }
 
     @Test
+    fun `cleanCandidate strips trailing example blocks`() {
+        val engine = GatekeeperEngine(ctx(), fakeInference { _, _, _ -> "" }, eligible())
+        val raw = "Compress me now.\n\nExample:\n\nOriginal: \"Long thing\"\n\nCompressed: \"Short thing\""
+        assertEquals("Compress me now.", engine.cleanCandidate(raw))
+    }
+
+    @Test
+    fun `cleanCandidate drops response echo lines`() {
+        val engine = GatekeeperEngine(ctx(), fakeInference { _, _, _ -> "" }, eligible())
+        val raw = "Compress me.\n\nresponse: \"Something else.\""
+        assertEquals("Compress me.", engine.cleanCandidate(raw))
+    }
+
+    @Test
+    fun `cleanCandidate unwraps quoted output`() {
+        val engine = GatekeeperEngine(ctx(), fakeInference { _, _, _ -> "" }, eligible())
+        assertEquals("Optimal algorithm selection.", engine.cleanCandidate("\"Optimal algorithm selection.\""))
+        assertEquals("Optimal algorithm selection.", engine.cleanCandidate("“Optimal algorithm selection.”"))
+        assertEquals("Optimal algorithm selection.", engine.cleanCandidate("response: \"Optimal algorithm selection.\""))
+    }
+
+    @Test
     fun `malformed audit json recovers instead of falling back`() = runTest {
         var calls = 0
         val engine = GatekeeperEngine(
