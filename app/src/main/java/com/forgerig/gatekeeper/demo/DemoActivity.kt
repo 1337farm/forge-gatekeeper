@@ -28,6 +28,8 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
+private const val KEY_BLUEPRINT = "blueprint"
+
 class DemoActivity : Activity() {
 
     private val scope = MainScope()
@@ -40,7 +42,7 @@ class DemoActivity : Activity() {
     private var lastSteps: List<RunResultFormat.StepItem> = emptyList()
     private var currentPrompt = ""
     private var currentAnswer = ""
-    private var pipelineSelected = true
+    private var blueprintEnabled = false
     private val sectionBodies = LinkedHashMap<String, LinearLayout>()
     private val sectionCounts = LinkedHashMap<String, TextView>()
     private val sectionChevrons = LinkedHashMap<String, TextView>()
@@ -66,6 +68,7 @@ class DemoActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        blueprintEnabled = savedInstanceState?.getBoolean(KEY_BLUEPRINT) ?: false
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -92,8 +95,9 @@ class DemoActivity : Activity() {
         val updateStatus = findViewById<TextView>(R.id.updateStatus)
         val stepsView = findViewById<LinearLayout>(R.id.stepsView)
         val statusBadge = findViewById<TextView>(R.id.statusBadge)
-        val pipelineTab = findViewById<Button>(R.id.pipelineTab)
-        val debugTab = findViewById<Button>(R.id.debugTab)
+        val pipelineMetaView = findViewById<LinearLayout>(R.id.pipelineMetaView)
+        val blueprintToggle = findViewById<Switch>(R.id.blueprintToggle)
+        blueprintToggle.isChecked = blueprintEnabled
         val answerPromptView = findViewById<TextView>(R.id.answerPromptView)
 
         modelUrl.setText(ModelDownloader.DEFAULT_ORT_REF)
@@ -121,14 +125,14 @@ class DemoActivity : Activity() {
         }
         syncForceSwitch()
         bypassSwitch.setOnCheckedChangeListener { _, _ -> syncForceSwitch() }
-        syncResultTabs(pipelineTab, debugTab, stepsView, debugLogView)
-        pipelineTab.setOnClickListener {
-            pipelineSelected = true
-            syncResultTabs(pipelineTab, debugTab, stepsView, debugLogView)
-        }
-        debugTab.setOnClickListener {
-            pipelineSelected = false
-            syncResultTabs(pipelineTab, debugTab, stepsView, debugLogView)
+        renderDebugChips(pipelineMetaView, debugLogView.text.toString())
+        blueprintToggle.setOnCheckedChangeListener { _, checked ->
+            blueprintEnabled = checked
+            if (blueprintEnabled) {
+                sectionBodies.values.forEach { it.visibility = View.VISIBLE }
+                sectionChevrons.values.forEach { it.text = "▼" }
+            }
+            renderSteps(stepsView, lastSteps)
         }
 
         downloadButton.setOnClickListener {
@@ -184,6 +188,7 @@ class DemoActivity : Activity() {
                                 .takeLast(200)
                                 .joinToString("\n")
                             debugLogView.text = kept
+                            renderDebugChips(pipelineMetaView, kept)
                         }
                         return
                     }
@@ -292,12 +297,12 @@ class DemoActivity : Activity() {
             answerPromptView.text = raw
             telemetryView.text = ""
             debugLogView.text = ""
+            pipelineMetaView.removeAllViews()
+            pipelineMetaView.visibility = View.GONE
             stepsView.removeAllViews()
             sectionBodies.clear()
             sectionCounts.clear()
             sectionChevrons.clear()
-            pipelineSelected = true
-            syncResultTabs(pipelineTab, debugTab, stepsView, debugLogView)
             lastSteps = emptyList()
             val provider = when (findViewById<Spinner>(R.id.providerSpinner).selectedItemPosition) {
                 1 -> InferenceService.PROVIDER_CPU
@@ -409,11 +414,25 @@ class DemoActivity : Activity() {
         stylePill(badge, label, tone)
     }
 
-    private fun syncResultTabs(pipelineTab: Button, debugTab: Button, stepsView: LinearLayout, debugLogView: TextView) {
-        stepsView.visibility = if (pipelineSelected) View.VISIBLE else View.GONE
-        debugLogView.visibility = if (pipelineSelected) View.GONE else View.VISIBLE
-        pipelineTab.setTextColor(getColor(if (pipelineSelected) R.color.gatekeeper_mint else R.color.gatekeeper_muted))
-        debugTab.setTextColor(getColor(if (pipelineSelected) R.color.gatekeeper_muted else R.color.gatekeeper_mint))
+    private fun renderDebugChips(container: LinearLayout, debug: String) {
+        container.removeAllViews()
+        val chips = RunResultFormat.debugChips(debug)
+        if (chips.isEmpty()) {
+            container.visibility = View.GONE
+            return
+        }
+        container.visibility = View.VISIBLE
+        chips.chunked(2).forEach { pair ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(4) }
+            }
+            pair.forEach { row.addView(pill(it.text, it.tone)) }
+            container.addView(row)
+        }
     }
 
     private fun renderSteps(container: LinearLayout, items: List<RunResultFormat.StepItem>) {
@@ -507,8 +526,8 @@ class DemoActivity : Activity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = dp(6) }
-            isClickable = hasQa
-            isFocusable = hasQa
+            isClickable = hasQa && !blueprintEnabled
+            isFocusable = hasQa && !blueprintEnabled
         }
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -565,7 +584,7 @@ class DemoActivity : Activity() {
         top.addView(meta)
         top.addView(pill(ui.statusText, ui.statusTone))
         val icon = TextView(this).apply {
-            text = if (hasQa) "›" else ""
+            text = if (hasQa && !blueprintEnabled) "›" else ""
             textSize = 18f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             setTextColor(getColor(R.color.gatekeeper_muted))
@@ -582,17 +601,19 @@ class DemoActivity : Activity() {
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply { topMargin = dp(8) }
-                visibility = View.GONE
+                visibility = if (blueprintEnabled) View.VISIBLE else View.GONE
             }
             val split = RunResultFormat.splitRequest(item.question)
             labeledBlock(qa, getString(R.string.label_system_prompt), split.system, getColor(R.color.gatekeeper_muted), true)
             labeledBlock(qa, getString(R.string.label_request), split.user, getColor(R.color.gatekeeper_mint), true)
             labeledBlock(qa, getString(R.string.label_response), item.answer, getColor(R.color.gatekeeper_sky), true)
             row.addView(qa)
-            row.setOnClickListener {
-                val expanded = qa.visibility == View.VISIBLE
-                qa.visibility = if (expanded) View.GONE else View.VISIBLE
-                icon.text = if (expanded) "›" else "▼"
+            if (!blueprintEnabled) {
+                row.setOnClickListener {
+                    val expanded = qa.visibility == View.VISIBLE
+                    qa.visibility = if (expanded) View.GONE else View.VISIBLE
+                    icon.text = if (expanded) "›" else "▼"
+                }
             }
         }
         return row
@@ -678,17 +699,21 @@ class DemoActivity : Activity() {
             )
             renderSteps(findViewById(R.id.stepsView), lastSteps)
         }
-        syncResultTabs(
-            findViewById(R.id.pipelineTab),
-            findViewById(R.id.debugTab),
-            findViewById(R.id.stepsView),
-            findViewById(R.id.debugLogView)
+        renderDebugChips(
+            findViewById(R.id.pipelineMetaView),
+            InferenceService.lastDebug
         )
+        findViewById<Switch>(R.id.blueprintToggle).isChecked = blueprintEnabled
     }
 
     override fun onStop() {
         downloadReceiver?.let { runCatching { unregisterReceiver(it) } }
         super.onStop()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(KEY_BLUEPRINT, blueprintEnabled)
     }
 
     override fun onDestroy() {

@@ -76,6 +76,30 @@ class RunResultFormatTest {
     }
 
     @Test
+    fun `debug chips parse provider warmup reuse and force all`() {
+        val debug = """
+            [xnnpack:provider] requested=XNNPACK actual=XNNPACK warmMs=3920 reused=true
+            [config] force-all ON: Stage B + compression + audit + tiny inputs all run
+        """.trimIndent()
+        val chips = RunResultFormat.debugChips(debug)
+        val texts = chips.map { it.text }
+        assertTrue(texts.contains("EP XNNPACK"))
+        assertTrue(texts.contains("WARM 3.9s"))
+        assertTrue(texts.contains("REUSED"))
+        assertTrue(texts.contains("FORCE-ALL"))
+    }
+
+    @Test
+    fun `debug chips fall back to requested provider when actual unknown`() {
+        val debug = "[provider] requested=CPU actual=? warmMs=1200 reused=false"
+        val chips = RunResultFormat.debugChips(debug)
+        val texts = chips.map { it.text }
+        assertTrue(texts.contains("EP CPU"))
+        assertTrue(texts.contains("WARM 1.2s"))
+        assertTrue(texts.contains("NEW"))
+    }
+
+    @Test
     fun `split request separates system prompt and user text`() {
         val split = RunResultFormat.splitRequest("system:\nSYS RULES\nuser:\nUSER TEXT")
         assertEquals("SYS RULES", split.system)

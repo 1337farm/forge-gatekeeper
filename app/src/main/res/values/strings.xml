@@ -17,7 +17,7 @@
     <string name="section_model">Model</string>
     <string name="section_result">Result</string>
     <string name="tab_pipeline">Pipeline</string>
-    <string name="tab_debug">Debug</string>
+    <string name="toggle_blueprint">Blueprint</string>
     <string name="section_final_answer">Final answer</string>
     <string name="label_original_request">Original request</string>
     <string name="label_final_response">Final response</string>
