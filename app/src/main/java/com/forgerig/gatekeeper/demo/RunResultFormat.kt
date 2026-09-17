@@ -114,6 +114,27 @@ object RunResultFormat {
         return StepUi(statusText, statusTone, stage.first, stage.second, chips.take(4))
     }
 
+    fun debugChips(debug: String): List<UiChip> {
+        val chips = mutableListOf<UiChip>()
+        Regex(
+            "(?m)^\\[(?:(cpu|xnnpack):)?provider\\]\\s+" +
+                "requested=([^\\s]+)\\s+actual=([^\\s]+)\\s+" +
+                "warmMs=(\\d+)\\s+reused=(\\w+)$"
+        ).findAll(debug).forEach { match ->
+            val requested = match.groupValues[2]
+            val actual = match.groupValues[3].takeUnless { it == "?" } ?: requested
+            if (actual.isNotBlank()) chips.add(UiChip("EP ${actual.uppercase()}", "info"))
+            val warmMs = match.groupValues[4].toLongOrNull() ?: 0L
+            if (warmMs > 0) chips.add(UiChip("WARM ${"%.1f".format(warmMs / 1000.0)}s", "muted"))
+            val reused = match.groupValues[5].toBoolean()
+            chips.add(UiChip(if (reused) "REUSED" else "NEW", if (reused) "success" else "warning"))
+        }
+        if (debug.contains("force-all ON", ignoreCase = true)) {
+            chips.add(UiChip("FORCE-ALL", "warning"))
+        }
+        return chips.distinctBy { it.text }
+    }
+
     fun splitRequest(question: String): StepRequest {
         val text = question.trim()
         if (text.isEmpty()) return StepRequest("", "")

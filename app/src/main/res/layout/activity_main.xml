@@ -281,37 +281,37 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
+                android:gravity="center_vertical"
                 android:orientation="horizontal">
 
-                <Button
-                    android:id="@+id/pipelineTab"
+                <TextView
+                    android:id="@+id/pipelineTitle"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:background="@drawable/btn_subtle"
-                    android:minHeight="0dp"
-                    android:paddingTop="8dp"
-                    android:paddingBottom="8dp"
                     android:text="@string/tab_pipeline"
                     android:textColor="@color/gatekeeper_mint"
                     android:textSize="12sp"
                     android:textStyle="bold" />
 
-                <Button
-                    android:id="@+id/debugTab"
-                    android:layout_width="0dp"
+                <Switch
+                    android:id="@+id/blueprintToggle"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:layout_weight="1"
-                    android:background="@drawable/btn_subtle"
-                    android:minHeight="0dp"
-                    android:paddingTop="8dp"
-                    android:paddingBottom="8dp"
-                    android:text="@string/tab_debug"
-                    android:textColor="@color/gatekeeper_muted"
+                    android:text="@string/toggle_blueprint"
+                    android:textColor="@color/gatekeeper_text"
                     android:textSize="12sp"
-                    android:textStyle="bold" />
+                    android:thumbTint="@color/gatekeeper_mint" />
             </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/pipelineMetaView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:animateLayoutChanges="true"
+                android:orientation="vertical"
+                android:visibility="gone" />
 
             <LinearLayout
                 android:id="@+id/stepsView"
