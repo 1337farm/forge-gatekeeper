@@ -524,9 +524,10 @@ class GatekeeperEngine(
     }
 
     // Small models wrap output in scaffolding ("USER_TEXT:…",
-    // "COMPRESSED_OUTPUT:…", "- [Explanation]:…", ``` fences) instead of
-    // emitting compressed text only. Strip it deterministically; only the
-    // surviving payload reaches the auditor and the answer step.
+    // "COMPRESSED_OUTPUT:…", "response:…", Example/Original/Compressed
+    // blocks, ``` fences, wrapped quotes) instead of emitting compressed
+    // text only. Strip it deterministically; only the surviving payload
+    // reaches the auditor and the answer step.
     internal fun cleanCandidate(raw: String): String {
         var s = raw.trim()
         val payload = s.indexOf("COMPRESSED_OUTPUT:")
@@ -537,7 +538,24 @@ class GatekeeperEngine(
             while (end > 0 && (s[end - 1] == '-' || s[end - 1].isWhitespace())) end--
             s = s.substring(0, end)
         }
-        return s.replace("```json", "").replace("```", "").trim()
+        s = s.replace("```json", "").replace("```", "").trim()
+        s = Regex("(?i)^(?:user_text|compressed_output|compressed|response|output)\\s*:\\s*")
+            .replace(s, "")
+        val lines = s.lines()
+        val marker = Regex("(?i)^(?:example|examples|original|compressed|response|output)\\s*:")
+        val cut = lines.indices.drop(1).firstOrNull { marker.containsMatchIn(lines[it]) }
+        if (cut != null) s = lines.subList(0, cut).joinToString("\n")
+        s = s.trim()
+        if (s.length >= 2) {
+            val first = s.first()
+            val last = s.last()
+            val quoted = (first == '"' && last == '"') ||
+                (first == '\'' && last == '\'') ||
+                (first == '“' && last == '”') ||
+                (first == '‘' && last == '’')
+            if (quoted) s = s.substring(1, s.length - 1).trim()
+        }
+        return s
     }
 
     internal fun parseAudit(raw: String): AccuracyAuditResult {
