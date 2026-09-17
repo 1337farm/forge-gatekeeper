@@ -83,6 +83,34 @@ class RunResultFormatTest {
     }
 
     @Test
+    fun `resolve audit placeholders substitutes compress candidate`() {
+        val items = listOf(
+            RunResultFormat.StepItem("done", "Stage C · Compression", "iter=1", "qC", "CANDIDATE ONE"),
+            RunResultFormat.StepItem(
+                "done", "Stage D · Accuracy audit", "MISMATCH",
+                "ORIGINAL:\nfoo\n\nCOMPRESSED:\n↳ compress iter 1 output (logged above, fed in full)",
+                "STATUS: MISMATCH"
+            )
+        )
+        val resolved = RunResultFormat.resolveAuditPlaceholders(items)
+        assertTrue(resolved[1].question.contains("CANDIDATE ONE"))
+        assertTrue(!resolved[1].question.contains("logged above"))
+    }
+
+    @Test
+    fun `resolve audit placeholders leaves unknown iters alone`() {
+        val items = listOf(
+            RunResultFormat.StepItem(
+                "done", "Stage D · Accuracy audit", "MISMATCH",
+                "ORIGINAL:\nfoo\n\nCOMPRESSED:\n↳ compress iter 9 output (logged above, fed in full)",
+                "STATUS: MISMATCH"
+            )
+        )
+        val resolved = RunResultFormat.resolveAuditPlaceholders(items)
+        assertTrue(resolved[0].question.contains("logged above"))
+    }
+
+    @Test
     fun `steps timeline labels kinds and survives encode round-trip`() {
         val telemetry = telemetry().copy(
             executionOrder = listOf(

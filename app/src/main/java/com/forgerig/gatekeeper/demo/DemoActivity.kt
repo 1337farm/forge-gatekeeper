@@ -203,9 +203,11 @@ class DemoActivity : Activity() {
                         outputView.text = output
                         answerPromptView.text = currentPrompt
                         telemetryView.text = intent.getStringExtra(InferenceService.EXTRA_TELEMETRY).orEmpty()
-                        lastSteps = RunResultFormat.decodeSteps(
-                            intent.getStringArrayListExtra(InferenceService.EXTRA_STEPS)
-                                ?: emptyList()
+                        lastSteps = RunResultFormat.resolveAuditPlaceholders(
+                            RunResultFormat.decodeSteps(
+                                intent.getStringArrayListExtra(InferenceService.EXTRA_STEPS)
+                                    ?: emptyList()
+                            )
                         )
                         renderSteps(stepsView, lastSteps)
                         if (ok) Toast.makeText(this@DemoActivity, "Run finished.", Toast.LENGTH_SHORT).show()
@@ -671,7 +673,9 @@ class DemoActivity : Activity() {
             findViewById<TextView>(R.id.telemetryView).text = InferenceService.lastTelemetry
             findViewById<TextView>(R.id.debugLogView).text = InferenceService.lastDebug
             updateStatusBadge(findViewById(R.id.statusBadge), null, InferenceService.lastStatus)
-            lastSteps = RunResultFormat.decodeSteps(InferenceService.lastSteps)
+            lastSteps = RunResultFormat.resolveAuditPlaceholders(
+                RunResultFormat.decodeSteps(InferenceService.lastSteps)
+            )
             renderSteps(findViewById(R.id.stepsView), lastSteps)
         }
         syncResultTabs(

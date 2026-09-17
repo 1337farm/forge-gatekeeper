@@ -197,6 +197,23 @@ object RunResultFormat {
         } else null
     }
 
+    fun resolveAuditPlaceholders(items: List<StepItem>): List<StepItem> {
+        val compressAnswers = items
+            .filter { it.label.startsWith("Stage C") }
+            .map { it.answer }
+        if (compressAnswers.isEmpty()) return items
+        val placeholder = Regex("↳ compress iter (\\d+) output \\(logged above, fed in full\\)")
+        return items.map { item ->
+            if (!item.label.startsWith("Stage D")) item else {
+                val match = placeholder.find(item.question) ?: return@map item
+                val iter = match.groupValues[1].toIntOrNull() ?: return@map item
+                val candidate = compressAnswers.getOrNull(iter - 1).orEmpty()
+                if (candidate.isBlank()) item
+                else item.copy(question = item.question.replace(match.value, candidate))
+            }
+        }
+    }
+
     fun skippedNote(skipped: Map<String, String>): String =
         if (skipped.isEmpty()) "" else "\nskipped: " +
             skipped.entries.joinToString("; ") { "${it.key} (${it.value})" }
