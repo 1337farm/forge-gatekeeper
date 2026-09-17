@@ -9,4 +9,6 @@
     <color name="gatekeeper_text">#EDEDF7</color>
     <color name="gatekeeper_muted">#9A9DC0</color>
     <color name="gatekeeper_divider">#33377A</color>
+    <color name="gatekeeper_sky">#7CC7FF</color>
+    <color name="gatekeeper_rose">#FF7B8A</color>
 </resources>

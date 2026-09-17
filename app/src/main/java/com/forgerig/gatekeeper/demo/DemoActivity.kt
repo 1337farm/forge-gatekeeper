@@ -1,5 +1,6 @@
 package com.forgerig.gatekeeper.demo
 
+import android.animation.LayoutTransition
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -7,6 +8,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -35,6 +38,12 @@ class DemoActivity : Activity() {
     private var modelFormExpanded = false
     // Last decoded timeline rows (mirrors stepsView) for Copy + re-attach.
     private var lastSteps: List<RunResultFormat.StepItem> = emptyList()
+    private var currentPrompt = ""
+    private var currentAnswer = ""
+    private var pipelineSelected = true
+    private val sectionBodies = LinkedHashMap<String, LinearLayout>()
+    private val sectionCounts = LinkedHashMap<String, TextView>()
+    private val sectionChevrons = LinkedHashMap<String, TextView>()
 
     private fun capabilityLine(): String {
         val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
@@ -82,6 +91,10 @@ class DemoActivity : Activity() {
         val modelForm = findViewById<View>(R.id.modelForm)
         val updateStatus = findViewById<TextView>(R.id.updateStatus)
         val stepsView = findViewById<LinearLayout>(R.id.stepsView)
+        val statusBadge = findViewById<TextView>(R.id.statusBadge)
+        val pipelineTab = findViewById<Button>(R.id.pipelineTab)
+        val debugTab = findViewById<Button>(R.id.debugTab)
+        val answerPromptView = findViewById<TextView>(R.id.answerPromptView)
 
         modelUrl.setText(ModelDownloader.DEFAULT_ORT_REF)
         modelFormExpanded = ModelFiles.pick(filesDir) == null
@@ -108,6 +121,15 @@ class DemoActivity : Activity() {
         }
         syncForceSwitch()
         bypassSwitch.setOnCheckedChangeListener { _, _ -> syncForceSwitch() }
+        syncResultTabs(pipelineTab, debugTab, stepsView, debugLogView)
+        pipelineTab.setOnClickListener {
+            pipelineSelected = true
+            syncResultTabs(pipelineTab, debugTab, stepsView, debugLogView)
+        }
+        debugTab.setOnClickListener {
+            pipelineSelected = false
+            syncResultTabs(pipelineTab, debugTab, stepsView, debugLogView)
+        }
 
         downloadButton.setOnClickListener {
             val spec = modelUrl.text.toString().trim()
@@ -151,7 +173,7 @@ class DemoActivity : Activity() {
                         // authoritative numbered render on DONE replaces these.
                         liveStepItem(line)?.let { item ->
                             lastSteps = lastSteps + item
-                            addStepRow(stepsView, lastSteps.size - 1, item)
+                            addGroupedStep(stepsView, lastSteps.size - 1, item)
                         }
                         return
                     }
@@ -168,9 +190,18 @@ class DemoActivity : Activity() {
                     InferenceService.ACTION_INFER_DONE -> {
                         runButton.isEnabled = true
                         val ok = intent.getBooleanExtra(InferenceService.EXTRA_OK, false)
-                        statusView.text = intent.getStringExtra(InferenceService.EXTRA_STATUS)
-                            ?: statusView.text
-                        outputView.text = intent.getStringExtra(InferenceService.EXTRA_OUTPUT).orEmpty()
+                        val status = intent.getStringExtra(InferenceService.EXTRA_STATUS).orEmpty()
+                        val output = intent.getStringExtra(InferenceService.EXTRA_OUTPUT).orEmpty()
+                        val answer = intent.getStringExtra(InferenceService.EXTRA_ANSWER).orEmpty()
+                        val prompt = intent.getStringExtra(InferenceService.EXTRA_PROMPT)
+                            .takeUnless { it.isNullOrBlank() }
+                            ?: currentPrompt.ifBlank { input.text.toString() }
+                        currentPrompt = prompt
+                        currentAnswer = answer.ifBlank { output }
+                        statusView.text = status.ifBlank { statusView.text }
+                        updateStatusBadge(statusBadge, ok, statusView.text.toString())
+                        outputView.text = output
+                        answerPromptView.text = currentPrompt
                         telemetryView.text = intent.getStringExtra(InferenceService.EXTRA_TELEMETRY).orEmpty()
                         lastSteps = RunResultFormat.decodeSteps(
                             intent.getStringArrayListExtra(InferenceService.EXTRA_STEPS)
@@ -213,11 +244,14 @@ class DemoActivity : Activity() {
 
         copyButton.setOnClickListener {
             val status = statusView.text.toString()
+            val prompt = answerPromptView.text.toString()
             val output = outputView.text.toString()
             val telemetry = telemetryView.text.toString()
             val debug = debugLogView.text.toString()
             val steps = stepsText()
-            val payload = listOf(caps, status, steps, output, telemetry, debug)
+            val promptBlock = prompt.trim().takeIf { it.isNotEmpty() }?.let { "Original request:\n$it" }.orEmpty()
+            val responseBlock = output.trim().takeIf { it.isNotEmpty() }?.let { "Final response:\n$it" }.orEmpty()
+            val payload = listOf(caps, status, steps, promptBlock, responseBlock, telemetry, debug)
                 .map { it.trim() }
                 .filter { it.isNotEmpty() && it != "Idle." }
                 .joinToString("\n\n")
@@ -249,10 +283,19 @@ class DemoActivity : Activity() {
             // final result arrive back here as broadcasts.
             runButton.isEnabled = false
             statusView.text = "Running on-device (background-safe)…"
+            updateStatusBadge(statusBadge, null, statusView.text.toString())
+            currentPrompt = raw
+            currentAnswer = ""
             outputView.text = ""
+            answerPromptView.text = raw
             telemetryView.text = ""
             debugLogView.text = ""
             stepsView.removeAllViews()
+            sectionBodies.clear()
+            sectionCounts.clear()
+            sectionChevrons.clear()
+            pipelineSelected = true
+            syncResultTabs(pipelineTab, debugTab, stepsView, debugLogView)
             lastSteps = emptyList()
             val provider = when (findViewById<Spinner>(R.id.providerSpinner).selectedItemPosition) {
                 1 -> InferenceService.PROVIDER_CPU
@@ -263,27 +306,222 @@ class DemoActivity : Activity() {
         }
     }
 
-    private fun renderSteps(container: LinearLayout, items: List<RunResultFormat.StepItem>) {
-        container.removeAllViews()
-        items.forEachIndexed { index, item -> addStepRow(container, index, item) }
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun toneColor(tone: String): Int = when (tone) {
+        "success" -> getColor(R.color.gatekeeper_mint)
+        "warning" -> getColor(R.color.gatekeeper_amber)
+        "error" -> getColor(R.color.gatekeeper_rose)
+        "info" -> getColor(R.color.gatekeeper_sky)
+        else -> getColor(R.color.gatekeeper_muted)
     }
 
-    private fun addStepRow(container: LinearLayout, index: Int, item: RunResultFormat.StepItem) {
-        val row = LinearLayout(this).apply {
+    private fun stylePill(view: TextView, text: String, tone: String) {
+        val color = toneColor(tone)
+        val background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(999).toFloat()
+            setColor((color and 0x00FFFFFF) or 0x26000000)
+            setStroke(dp(1), color)
+        }
+        view.background = background
+        view.setTextColor(color)
+        view.text = text
+        view.setPadding(dp(10), dp(4), dp(10), dp(4))
+    }
+
+    private fun pill(text: String, tone: String): TextView {
+        return TextView(this).apply {
+            textSize = 10f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(6) }
+        }.also { stylePill(it, text, tone) }
+    }
+
+    private fun animatedColumn(): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val transition = LayoutTransition()
+            transition.enableTransitionType(LayoutTransition.CHANGING)
+            layoutTransition = transition
+        }
+    }
+
+    private fun labeledBlock(parent: LinearLayout, label: String, value: String, accent: Int, mono: Boolean) {
+        if (value.isBlank()) return
+        parent.addView(TextView(this).apply {
+            text = label
+            textSize = 11f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setTextColor(accent)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8) }
+        })
+        parent.addView(TextView(this).apply {
+            text = value
+            textSize = 11f
+            setTextIsSelectable(true)
+            if (mono) setTypeface(android.graphics.Typeface.MONOSPACE)
+            setTextColor(getColor(R.color.gatekeeper_text))
+            setBackgroundResource(R.drawable.field_bg)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(4) }
+        })
+    }
+
+    private fun updateStatusBadge(badge: TextView, ok: Boolean?, status: String) {
+        val text = status.trim()
+        val upper = text.uppercase()
+        val label = when {
+            text.isBlank() || text == "Idle." || text.endsWith("Idle.") -> ""
+            text.startsWith("Running") -> "RUNNING"
+            upper.contains("FALLBACK") -> "FALLBACK"
+            upper.contains("BLOCKED") -> "BLOCKED"
+            upper.contains("SUCCESS") -> "SUCCESS"
+            upper.contains("RAW") -> "RAW"
+            upper.startsWith("BENCHMARK") -> "BENCHMARK"
+            upper.startsWith("ERROR") || ok == false -> "ERROR"
+            ok == true -> "DONE"
+            else -> ""
+        }
+        val tone = when (label) {
+            "SUCCESS", "RAW", "DONE" -> "success"
+            "FALLBACK", "BENCHMARK" -> "warning"
+            "BLOCKED", "ERROR" -> "error"
+            "RUNNING" -> "info"
+            else -> "muted"
+        }
+        if (label.isBlank()) {
+            badge.visibility = View.GONE
+            return
+        }
+        badge.visibility = View.VISIBLE
+        stylePill(badge, label, tone)
+    }
+
+    private fun syncResultTabs(pipelineTab: Button, debugTab: Button, stepsView: LinearLayout, debugLogView: TextView) {
+        stepsView.visibility = if (pipelineSelected) View.VISIBLE else View.GONE
+        debugLogView.visibility = if (pipelineSelected) View.GONE else View.VISIBLE
+        pipelineTab.setTextColor(getColor(if (pipelineSelected) R.color.gatekeeper_mint else R.color.gatekeeper_muted))
+        debugTab.setTextColor(getColor(if (pipelineSelected) R.color.gatekeeper_muted else R.color.gatekeeper_mint))
+    }
+
+    private fun renderSteps(container: LinearLayout, items: List<RunResultFormat.StepItem>) {
+        container.removeAllViews()
+        sectionBodies.clear()
+        sectionCounts.clear()
+        sectionChevrons.clear()
+        items.forEachIndexed { index, item -> addGroupedStep(container, index, item) }
+    }
+
+    private fun ensureSection(container: LinearLayout, item: RunResultFormat.StepItem, ui: RunResultFormat.StepUi): LinearLayout {
+        sectionBodies[item.label]?.let { return it }
+        val section = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.field_bg)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(8) }
+        }
+        val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 6, 0, 6)
+            gravity = android.view.Gravity.CENTER_VERTICAL
             isClickable = true
             isFocusable = true
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
         }
-        val circle = TextView(this).apply {
+        header.addView(pill(ui.stageText, ui.stageTone))
+        header.addView(TextView(this).apply {
+            text = item.label
+            textSize = 13f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setTextColor(getColor(R.color.gatekeeper_text))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val count = TextView(this).apply {
+            text = "0"
+            textSize = 11f
+            setTextColor(getColor(R.color.gatekeeper_muted))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(8) }
+        }
+        val chevron = TextView(this).apply {
+            text = "▼"
+            textSize = 16f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setTextColor(getColor(R.color.gatekeeper_muted))
+        }
+        header.addView(count)
+        header.addView(chevron)
+        val body = animatedColumn().apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(6) }
+        }
+        section.addView(header)
+        section.addView(body)
+        container.addView(section)
+        sectionBodies[item.label] = body
+        sectionCounts[item.label] = count
+        sectionChevrons[item.label] = chevron
+        header.setOnClickListener {
+            val expanded = body.visibility == View.VISIBLE
+            body.visibility = if (expanded) View.GONE else View.VISIBLE
+            chevron.text = if (expanded) "›" else "▼"
+        }
+        return body
+    }
+
+    private fun addGroupedStep(container: LinearLayout, index: Int, item: RunResultFormat.StepItem) {
+        val ui = RunResultFormat.stepUi(item)
+        val body = ensureSection(container, item, ui)
+        body.addView(stepCard(index, item, ui))
+        sectionCounts[item.label]?.text = "${body.childCount}"
+    }
+
+    private fun stepCard(index: Int, item: RunResultFormat.StepItem, ui: RunResultFormat.StepUi): LinearLayout {
+        val hasQa = item.question.isNotBlank() || item.answer.isNotBlank()
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.card_bg)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(6) }
+            isClickable = hasQa
+            isFocusable = hasQa
+        }
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        top.addView(TextView(this).apply {
             text = "${index + 1}"
             gravity = android.view.Gravity.CENTER
             textSize = 12f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
-            val size = (28 * resources.displayMetrics.density).toInt()
-            layoutParams = LinearLayout.LayoutParams(size, size).apply {
-                marginEnd = (10 * resources.displayMetrics.density).toInt()
-            }
+            layoutParams = LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginEnd = dp(10) }
             when (item.kind) {
                 "skip" -> {
                     setBackgroundResource(R.drawable.circle_skip)
@@ -298,55 +536,32 @@ class DemoActivity : Activity() {
                     setTextColor(getColor(R.color.gatekeeper_navy))
                 }
             }
-        }
-        val texts = LinearLayout(this).apply {
+        })
+        val meta = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
-        val title = TextView(this).apply {
-            text = item.label
-            textSize = 14f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setTextColor(getColor(R.color.gatekeeper_text))
-        }
-        texts.addView(title)
-        if (item.detail.isNotBlank()) {
-            texts.addView(TextView(this).apply {
-                text = item.detail
+        val summary = item.detail.ifBlank { if (hasQa) "Model turn" else "" }
+        if (summary.isNotBlank()) {
+            meta.addView(TextView(this).apply {
+                text = summary
                 textSize = 12f
                 setTextColor(getColor(R.color.gatekeeper_muted))
             })
         }
-        val qaContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
+        if (ui.chips.isNotEmpty()) {
+            val chips = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(6) }
+            }
+            ui.chips.take(3).forEach { chips.addView(pill(it.text, it.tone)) }
+            meta.addView(chips)
         }
-        if (item.question.isNotBlank()) {
-            qaContainer.addView(TextView(this).apply {
-                text = "Q: ${item.question}"
-                textSize = 11f
-                setTextColor(getColor(R.color.gatekeeper_muted))
-                setTextIsSelectable(true)
-                setTypeface(android.graphics.Typeface.MONOSPACE)
-            })
-        }
-        if (item.answer.isNotBlank()) {
-            qaContainer.addView(TextView(this).apply {
-                text = "A: ${item.answer}"
-                textSize = 11f
-                setTextColor(getColor(R.color.gatekeeper_text))
-                setTextIsSelectable(true)
-                setTypeface(android.graphics.Typeface.MONOSPACE)
-            })
-        }
-        val hasQa = item.question.isNotBlank() || item.answer.isNotBlank()
-        if (hasQa) {
-            qaContainer.visibility = View.GONE
-            texts.addView(qaContainer)
-        }
+        top.addView(meta)
+        top.addView(pill(ui.statusText, ui.statusTone))
         val icon = TextView(this).apply {
             text = if (hasQa) "›" else ""
             textSize = 18f
@@ -355,19 +570,30 @@ class DemoActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { gravity = android.view.Gravity.CENTER }
+            ).apply { marginStart = dp(8) }
         }
-        row.addView(circle)
-        row.addView(texts)
-        row.addView(icon)
-        container.addView(row)
+        top.addView(icon)
+        row.addView(top)
         if (hasQa) {
+            val qa = animatedColumn().apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(8) }
+                visibility = View.GONE
+            }
+            val split = RunResultFormat.splitRequest(item.question)
+            labeledBlock(qa, getString(R.string.label_system_prompt), split.system, getColor(R.color.gatekeeper_muted), true)
+            labeledBlock(qa, getString(R.string.label_request), split.user, getColor(R.color.gatekeeper_mint), true)
+            labeledBlock(qa, getString(R.string.label_response), item.answer, getColor(R.color.gatekeeper_sky), true)
+            row.addView(qa)
             row.setOnClickListener {
-                val expanded = qaContainer.visibility == View.VISIBLE
-                qaContainer.visibility = if (expanded) View.GONE else View.VISIBLE
+                val expanded = qa.visibility == View.VISIBLE
+                qa.visibility = if (expanded) View.GONE else View.VISIBLE
                 icon.text = if (expanded) "›" else "▼"
             }
         }
+        return row
     }
 
     // Maps a live status line to a finished timeline row. In-progress lines
@@ -433,14 +659,27 @@ class DemoActivity : Activity() {
         if (InferenceService.isRunning) {
             findViewById<TextView>(R.id.statusView).text = InferenceService.lastStatus
             findViewById<TextView>(R.id.debugLogView).text = InferenceService.lastDebug
+            currentPrompt = InferenceService.lastPrompt.ifBlank { currentPrompt }
+            findViewById<TextView>(R.id.answerPromptView).text = currentPrompt
+            updateStatusBadge(findViewById(R.id.statusBadge), null, InferenceService.lastStatus)
         } else if (InferenceService.lastStatus != "Idle.") {
             findViewById<TextView>(R.id.statusView).text = InferenceService.lastStatus
+            currentPrompt = InferenceService.lastPrompt.ifBlank { currentPrompt }
+            currentAnswer = InferenceService.lastAnswer.ifBlank { InferenceService.lastOutput }
+            findViewById<TextView>(R.id.answerPromptView).text = currentPrompt
             findViewById<TextView>(R.id.outputView).text = InferenceService.lastOutput
             findViewById<TextView>(R.id.telemetryView).text = InferenceService.lastTelemetry
             findViewById<TextView>(R.id.debugLogView).text = InferenceService.lastDebug
+            updateStatusBadge(findViewById(R.id.statusBadge), null, InferenceService.lastStatus)
             lastSteps = RunResultFormat.decodeSteps(InferenceService.lastSteps)
             renderSteps(findViewById(R.id.stepsView), lastSteps)
         }
+        syncResultTabs(
+            findViewById(R.id.pipelineTab),
+            findViewById(R.id.debugTab),
+            findViewById(R.id.stepsView),
+            findViewById(R.id.debugLogView)
+        )
     }
 
     override fun onStop() {
