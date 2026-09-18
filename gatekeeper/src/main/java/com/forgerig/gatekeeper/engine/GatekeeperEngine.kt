@@ -516,11 +516,17 @@ class GatekeeperEngine(
         }
     }
 
+    // The compressor input is framed with explicit markers so a small model
+    // treats the working text as a PROMPT to shorten, never as an instruction
+    // to answer or execute. Retry inputs carry the failed output plus the
+    // judge feedback, never bare prose the model could wander off with.
     internal fun buildCompressionInput(original: String, corrective: String, previousFailed: String?): String {
-        if (corrective.isBlank() || previousFailed == null) return original
-        return "ORIGINAL TASK:\n$original\n\nYOUR PREVIOUS FAILED ATTEMPT (do not repeat these errors):\n" +
+        if (corrective.isBlank() || previousFailed == null) {
+            return "PROMPT TO COMPRESS (rewrite shorter, do not answer):\n$original"
+        }
+        return "ORIGINAL PROMPT TO COMPRESS:\n$original\n\nYOUR PREVIOUS FAILED OUTPUT (do not repeat):\n" +
             "$previousFailed\n\nJUDGE CORRECTIVE FEEDBACK (must fix all):\n$corrective\n\n" +
-            "Now produce the corrected compressed output ONLY."
+            "Now output the corrected compressed prompt ONLY."
     }
 
     // Small models wrap output in scaffolding ("USER_TEXT:…",
@@ -539,7 +545,7 @@ class GatekeeperEngine(
             s = s.substring(0, end)
         }
         s = s.replace("```json", "").replace("```", "").trim()
-        s = Regex("(?i)^(?:user_text|compressed_output|compressed|response|output)\\s*:\\s*")
+        s = Regex("(?i)^(?:user_text|compressed_output|compressed|response|output|prompt\\s+to\\s+compress|original\\s+prompt\\s+to\\s+compress)\\s*(?:\\([^)]*\\))?\\s*:\\s*")
             .replace(s, "")
         val lines = s.lines()
         val marker = Regex("(?i)^(?:example|examples|original|compressed|response|output)\\s*:")

@@ -21,6 +21,7 @@ class SystemPromptsTest {
         val p = SystemPrompts.compressionPrompt()
         assertTrue(p.contains("PRESERVE EXACTLY"))
         assertTrue(p.contains("Do not add"))
+        assertTrue(p.contains("never an answerer") || p.contains("never answer"))
     }
 
     @Test
@@ -28,6 +29,7 @@ class SystemPromptsTest {
         val p = SystemPrompts.auditPrompt()
         assertTrue(p.contains("MATCH|MISMATCH") || p.contains("STATUS:"))
         assertTrue(p.contains("FEEDBACK"))
+        assertTrue(p.contains("same thing"))
         assertFalse(p.contains("{"))
     }
 
