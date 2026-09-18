@@ -17,14 +17,12 @@
     <string name="section_model">Model</string>
     <string name="section_result">Result</string>
     <string name="tab_pipeline">Pipeline</string>
-    <string name="toggle_blueprint">Blueprint</string>
     <string name="section_final_answer">Final answer</string>
     <string name="label_original_request">Original request</string>
     <string name="label_final_response">Final response</string>
     <string name="label_request">Request</string>
     <string name="label_response">Response</string>
     <string name="label_system_prompt">System prompt</string>
-    <string name="label_full_raw_request">Full raw request</string>
     <string name="provider_label">Provider</string>
     <string-array name="provider_options">
         <item>XNNPACK (fast)</item>
