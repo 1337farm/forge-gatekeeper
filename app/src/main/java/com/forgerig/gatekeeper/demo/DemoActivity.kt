@@ -28,8 +28,6 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
-private const val KEY_BLUEPRINT = "blueprint"
-
 class DemoActivity : Activity() {
 
     private val scope = MainScope()
@@ -42,7 +40,6 @@ class DemoActivity : Activity() {
     private var lastSteps: List<RunResultFormat.StepItem> = emptyList()
     private var currentPrompt = ""
     private var currentAnswer = ""
-    private var blueprintEnabled = false
     private val sectionBodies = LinkedHashMap<String, LinearLayout>()
     private val sectionCounts = LinkedHashMap<String, TextView>()
     private val sectionChevrons = LinkedHashMap<String, TextView>()
@@ -68,7 +65,6 @@ class DemoActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        blueprintEnabled = savedInstanceState?.getBoolean(KEY_BLUEPRINT) ?: false
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -96,8 +92,6 @@ class DemoActivity : Activity() {
         val stepsView = findViewById<LinearLayout>(R.id.stepsView)
         val statusBadge = findViewById<TextView>(R.id.statusBadge)
         val pipelineMetaView = findViewById<LinearLayout>(R.id.pipelineMetaView)
-        val blueprintToggle = findViewById<Switch>(R.id.blueprintToggle)
-        blueprintToggle.isChecked = blueprintEnabled
         val answerPromptView = findViewById<TextView>(R.id.answerPromptView)
 
         modelUrl.setText(ModelDownloader.DEFAULT_ORT_REF)
@@ -126,17 +120,6 @@ class DemoActivity : Activity() {
         syncForceSwitch()
         bypassSwitch.setOnCheckedChangeListener { _, _ -> syncForceSwitch() }
         renderDebugChips(pipelineMetaView, debugLogView.text.toString())
-        blueprintToggle.setOnCheckedChangeListener { _, checked ->
-            blueprintEnabled = checked
-            if (blueprintEnabled) {
-                sectionBodies.values.forEach { it.visibility = View.VISIBLE }
-                sectionChevrons.values.forEach { it.text = "▼" }
-            }
-            // Blueprint is the raw-payload mode: reveal the full debug log
-            // alongside every step's inline request/response payloads.
-            debugLogView.visibility = if (blueprintEnabled) View.VISIBLE else View.GONE
-            renderSteps(stepsView, lastSteps)
-        }
 
         downloadButton.setOnClickListener {
             val spec = modelUrl.text.toString().trim()
@@ -300,7 +283,6 @@ class DemoActivity : Activity() {
             answerPromptView.text = raw
             telemetryView.text = ""
             debugLogView.text = ""
-            debugLogView.visibility = if (blueprintEnabled) View.VISIBLE else View.GONE
             pipelineMetaView.removeAllViews()
             pipelineMetaView.visibility = View.GONE
             stepsView.removeAllViews()
@@ -530,8 +512,8 @@ class DemoActivity : Activity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = dp(6) }
-            isClickable = hasQa && !blueprintEnabled
-            isFocusable = hasQa && !blueprintEnabled
+            isClickable = hasQa
+            isFocusable = hasQa
         }
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -588,7 +570,7 @@ class DemoActivity : Activity() {
         top.addView(meta)
         top.addView(pill(ui.statusText, ui.statusTone))
         val icon = TextView(this).apply {
-            text = if (hasQa && !blueprintEnabled) "›" else ""
+            text = if (hasQa) "›" else ""
             textSize = 18f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             setTextColor(getColor(R.color.gatekeeper_muted))
@@ -605,22 +587,17 @@ class DemoActivity : Activity() {
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply { topMargin = dp(8) }
-                visibility = if (blueprintEnabled) View.VISIBLE else View.GONE
+                visibility = View.GONE
             }
             val split = RunResultFormat.splitRequest(item.question)
-            if (blueprintEnabled) {
-                labeledBlock(qa, getString(R.string.label_full_raw_request), item.question, getColor(R.color.gatekeeper_muted), true)
-            }
             labeledBlock(qa, getString(R.string.label_system_prompt), split.system, getColor(R.color.gatekeeper_muted), true)
             labeledBlock(qa, getString(R.string.label_request), split.user, getColor(R.color.gatekeeper_mint), true)
             labeledBlock(qa, getString(R.string.label_response), item.answer, getColor(R.color.gatekeeper_sky), true)
             row.addView(qa)
-            if (!blueprintEnabled) {
-                row.setOnClickListener {
-                    val expanded = qa.visibility == View.VISIBLE
-                    qa.visibility = if (expanded) View.GONE else View.VISIBLE
-                    icon.text = if (expanded) "›" else "▼"
-                }
+            row.setOnClickListener {
+                val expanded = qa.visibility == View.VISIBLE
+                qa.visibility = if (expanded) View.GONE else View.VISIBLE
+                icon.text = if (expanded) "›" else "▼"
             }
         }
         return row
@@ -710,19 +687,11 @@ class DemoActivity : Activity() {
             findViewById(R.id.pipelineMetaView),
             InferenceService.lastDebug
         )
-        findViewById<Switch>(R.id.blueprintToggle).isChecked = blueprintEnabled
-        findViewById<TextView>(R.id.debugLogView).visibility =
-            if (blueprintEnabled) View.VISIBLE else View.GONE
     }
 
     override fun onStop() {
         downloadReceiver?.let { runCatching { unregisterReceiver(it) } }
         super.onStop()
-    }
-
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        outState.putBoolean(KEY_BLUEPRINT, blueprintEnabled)
     }
 
     override fun onDestroy() {
