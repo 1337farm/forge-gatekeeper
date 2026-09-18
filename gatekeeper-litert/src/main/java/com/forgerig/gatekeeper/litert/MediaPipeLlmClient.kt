@@ -5,6 +5,7 @@ import android.util.Log
 import com.forgerig.gatekeeper.engine.InferenceClient
 import com.forgerig.gatekeeper.engine.TimedGeneration
 import com.forgerig.gatekeeper.engine.TimedInferenceClient
+import com.forgerig.gatekeeper.prompts.PromptFraming
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -105,7 +106,7 @@ class MediaPipeLlmClient(
             if (!llmRef.isInitialized()) warmup()
             val start = android.os.SystemClock.elapsedRealtime()
             val raw = try {
-                llm.generateResponse("$systemPrompt\n\n<<<USER>>>\n$userContent\n<<<END>>>")
+                llm.generateResponse(PromptFraming.wrap(systemPrompt, userContent))
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
                 throw IllegalStateException("Local LLM failed: ${t.message}".take(600), t)

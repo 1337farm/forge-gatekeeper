@@ -16,6 +16,12 @@ enum class InjectionVerdict { SAFE, MALICIOUS }
 enum class CompletenessStatus { READY, MISSING_CONTEXT }
 enum class AuditStatus { MATCH, MISMATCH }
 
+// Selectable prompt wording for the LLM stages. LABELED is the verbose
+// labeled-line contract; MICRO_OP is the terse single-character-key set.
+// Both parse through the same delineated-block reader, so the A/B only
+// changes what the model is asked — never what the engine accepts.
+enum class PromptSet { LABELED, MICRO_OP }
+
 data class StepExecutionRecord(
     val order: Int,
     val step: GatekeeperStep,
@@ -54,6 +60,7 @@ data class GatekeeperConfig(
     val enableStageB: Boolean = true,
     val enableCompression: Boolean = true,
     val enableAudit: Boolean = true,
+    val promptSet: PromptSet = PromptSet.LABELED,
     // Inputs at or under this many (estimated) tokens skip compress+audit:
     // there is nothing to save, and a small model asked to rewrite a
     // 5-token greeting can only add drift (observed: 5→75 tokens, then 4

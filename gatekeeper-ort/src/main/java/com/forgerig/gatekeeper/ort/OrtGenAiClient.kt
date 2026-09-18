@@ -5,6 +5,7 @@ import android.util.Log
 import com.forgerig.gatekeeper.engine.InferenceClient
 import com.forgerig.gatekeeper.engine.TimedGeneration
 import com.forgerig.gatekeeper.engine.TimedInferenceClient
+import com.forgerig.gatekeeper.prompts.PromptFraming
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -196,7 +197,7 @@ class OrtGenAiClient(
                 //    params.setSearchOption("stop_sequences", arrayOf("\n", "<|endoftext|>"))
                 //    Prevents token drift, clipping, and contraction artifacts (e.g., "it'")
                 // ------------------------------------------
-                LlmBridge.nativeGenerate(handle, "$systemPrompt\n\n$userContent", maxNewTokens) { token ->
+                LlmBridge.nativeGenerate(handle, PromptFraming.wrap(systemPrompt, userContent), maxNewTokens) { token ->
                     out.append(token)
                 }
             } catch (t: Throwable) {
