@@ -342,6 +342,27 @@ class GatekeeperEngineTest {
     }
 
     @Test
+    fun `cleanCandidate strips prompt marker echo`() {
+        val engine = GatekeeperEngine(ctx(), fakeInference { _, _, _ -> "" }, eligible())
+        assertEquals(
+            "do X now",
+            engine.cleanCandidate("PROMPT TO COMPRESS (rewrite shorter, do not answer):\ndo X now")
+        )
+    }
+
+    @Test
+    fun `buildCompressionInput frames the prompt with markers`() {
+        val engine = GatekeeperEngine(ctx(), fakeInference { _, _, _ -> "" }, eligible())
+        val first = engine.buildCompressionInput("please do X", "", null)
+        assertTrue(first.contains("PROMPT TO COMPRESS"))
+        assertTrue(first.contains("please do X"))
+        val retry = engine.buildCompressionInput("please do X", "restore X", "BAD OUTPUT")
+        assertTrue(retry.contains("please do X"))
+        assertTrue(retry.contains("BAD OUTPUT"))
+        assertTrue(retry.contains("restore X"))
+    }
+
+    @Test
     fun `malformed audit json recovers instead of falling back`() = runTest {
         var calls = 0
         val engine = GatekeeperEngine(

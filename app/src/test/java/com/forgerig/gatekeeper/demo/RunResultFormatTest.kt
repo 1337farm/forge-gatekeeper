@@ -189,4 +189,18 @@ class RunResultFormatTest {
         val flipped = RunResultFormat.benchmarkSummary(cpuMs = 20000, xnnpackMs = 40000)
         assertTrue(flipped.contains("CPU 2.0× faster"))
     }
+
+    @Test
+    fun `fallback telemetry keeps reason and resource on separate lines`() {
+        val t = telemetry().copy(expansionGuardFailed = true, maxRetriesExhausted = true)
+        val (_, _, telemetryText) = RunResultFormat.format(
+            GatekeeperResult.FallbackRequired("sanitized", "expansion guard failed", t),
+            "[ORT XNNPACK] ",
+            "CPU avg 392% · peak 428% · RAM 3384MB avg"
+        )
+        val lines = telemetryText.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        assertTrue(lines.any { it.startsWith("Reason:") })
+        assertTrue(lines.any { it.startsWith("CPU avg") })
+        assertTrue(lines.none { it.contains("inputCPU") || it.contains("input CPU avg") })
+    }
 }

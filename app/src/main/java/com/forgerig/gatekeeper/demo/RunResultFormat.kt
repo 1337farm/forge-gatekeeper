@@ -261,7 +261,12 @@ object RunResultFormat {
         resourceLine: String? = null,
         answer: String? = null
     ): Triple<String, String, String> {
-        val resSuffix = resourceLine?.let { "\n$it" } ?: ""
+        // Telemetry is built as one string per line and joined with "\n" so a
+        // reason line can never glue itself to the resource line ("…inputCPU
+        // avg…"): every section owns its own line.
+        fun lines(vararg parts: String?): String =
+            parts.mapNotNull { it?.takeIf { s -> s.isNotBlank() } }.joinToString("\n")
+        val skipped = { t: ExecutionTelemetry -> skippedNote(t.skippedSteps).trim().takeIf { it.isNotEmpty() } }
         return when (result) {
             is GatekeeperResult.Success -> {
                 val t = result.telemetry
@@ -269,40 +274,49 @@ object RunResultFormat {
                     mode + "SUCCESS (heat=${result.heat})",
                     result.safeCompressedPrompt +
                         (answer?.let { "\n\n— Answer —\n$it" } ?: ""),
-                    "Tokens: ${t.preCompressionTokens} → ${t.postCompressionTokens} " +
-                        "(${String.format("%.1f", t.compressionRatioPct)}% saved) · " +
-                        "Compress ×${t.compressionIterations} · Audit ×${t.auditIterations}\n" +
+                    lines(
+                        "Tokens: ${t.preCompressionTokens} → ${t.postCompressionTokens} " +
+                            "(${String.format("%.1f", t.compressionRatioPct)}% saved) · " +
+                            "Compress ×${t.compressionIterations} · Audit ×${t.auditIterations}",
                         "Time: ${seconds(t.totalDurationMs)} · Steps: ${t.executionOrder.size} · " +
-                        "Redactions: ${redactions(t.redactionEvents)}$resSuffix" +
-                        skippedNote(t.skippedSteps)
+                            "Redactions: ${redactions(t.redactionEvents)}",
+                        resourceLine,
+                        skipped(t)
+                    )
                 )
             }
             is GatekeeperResult.Blocked -> {
                 Triple(
                     mode + "BLOCKED (heat=${result.heat}): ${result.reason}",
                     "(nothing sent anywhere)",
-                    "Time: ${seconds(result.telemetry.totalDurationMs)} · " +
-                        "Redactions: ${redactions(result.telemetry.redactionEvents)}$resSuffix" +
-                        skippedNote(result.telemetry.skippedSteps)
+                    lines(
+                        "Time: ${seconds(result.telemetry.totalDurationMs)} · " +
+                            "Redactions: ${redactions(result.telemetry.redactionEvents)}",
+                        resourceLine,
+                        skipped(result.telemetry)
+                    )
                 )
             }
             is GatekeeperResult.FallbackRequired -> {
                 val t = result.telemetry
                 val reasonLine = if (t.expansionGuardFailed) {
-                    "expansion guard failed — model cannot compress this input"
+                    "Reason: expansion guard failed — model cannot compress this input"
                 } else if (t.maxRetriesExhausted) {
-                    "retries exhausted"
+                    "Reason: retries exhausted"
                 } else {
-                    ""
+                    null
                 }
                 Triple(
                     mode + "FALLBACK: ${result.reason}",
                     result.sanitizedPrompt,
-                    "Compress ×${t.compressionIterations} · Audit ×${t.auditIterations} · " +
+                    lines(
+                        "Compress ×${t.compressionIterations} · Audit ×${t.auditIterations}",
                         "Time: ${seconds(t.totalDurationMs)} · Steps: ${t.executionOrder.size} · " +
-                        "Redactions: ${redactions(t.redactionEvents)}" +
-                        (if (reasonLine.isNotEmpty()) " · $reasonLine" else "") +
-                        resSuffix + skippedNote(t.skippedSteps)
+                            "Redactions: ${redactions(t.redactionEvents)}",
+                        reasonLine,
+                        resourceLine,
+                        skipped(t)
+                    )
                 )
             }
         }
