@@ -607,15 +607,22 @@ class GatekeeperEngine(
         )
     }
 
-    // Labeled-line blocks ("STATUS: …", "HEAT: …"). The instructed reply
-    // format: plain lines beat JSON for small models (no quotes/braces to
-    // drop, no fences to strip). Continuation lines glue to the previous key;
-    // unknown KEY: lines glue too, so prose with colons can't desync blocks.
-    // A block starts at STATUS/HEAT; blocks without STATUS/HEAT are ignored
-    // by the verdict builders below.
+    // Labeled-line blocks ("STATUS: …", "HEAT: …", and micro-op single-letter
+    // keys "H:/I:/R:" + "S:/D:/F:"). The instructed reply format: plain lines
+    // beat JSON for small models (no quotes/braces to drop, no fences to
+    // strip). Continuation lines glue to the previous key; unknown KEY: lines
+    // glue too, so prose with colons can't desync blocks. Empty lines and ```
+    // fences are skipped without throwing, so multi-line gaps never fault.
+    // A block starts at STATUS/HEAT/S/H; blocks without a verdict key are
+    // ignored by the verdict builders below (strict validity: a micro block
+    // must carry H+I or S, a legacy block HEAT+INJECTION or STATUS).
     private val DELINEATED_KEYS = setOf(
         "STATUS", "DRIFT", "DROPPED", "HALLUCINATIONS", "FEEDBACK",
-        "HEAT", "INJECTION", "REASON", "AMBIENT_PII", "COMPLETENESS", "MISSING"
+        "HEAT", "INJECTION", "REASON", "AMBIENT_PII", "COMPLETENESS", "MISSING",
+        // Zero-knowledge micro-op single-character boundaries:
+        // Stage A: H: (heat), I: (injection), R: (reason).
+        // Stage D: S: (status), D: (drift), F: (feedback).
+        "H", "I", "R", "S", "D", "F"
     )
 
     internal fun delineatedBlocks(raw: String): List<Map<String, String>> {
@@ -628,7 +635,7 @@ class GatekeeperEngine(
             val m = Regex("^([A-Za-z_]+)\\s*:\\s*(.*)$").matchEntire(t)
             val key = m?.groupValues?.get(1)?.uppercase()
             if (m != null && key != null && key in DELINEATED_KEYS) {
-                if (key == "STATUS" || key == "HEAT") {
+                if (key == "STATUS" || key == "HEAT" || key == "S" || key == "H") {
                     cur = mutableMapOf()
                     blocks.add(cur)
                 }
@@ -657,14 +664,28 @@ class GatekeeperEngine(
     }
 
     private fun parseDelineatedAudit(block: Map<String, String>): AccuracyAuditResult? {
-        val status = block["STATUS"] ?: return null
-        val drift = block["DRIFT"]?.toDoubleOrNull() ?: 0.0
+        // Strict single-letter boundaries (S:/D:/F:) take precedence; legacy
+        // STATUS:/DRIFT:/FEEDBACK: remain supported for backward compatibility.
+        val rawStatus = block["S"] ?: block["STATUS"] ?: return null
+        val status = rawStatus.trim().trim('[', ']').trim()
+        // Strict validity: only MATCH/MISMATCH are verdicts; anything else is
+        // not a verdict (caller treats absence as "no audit verdict").
+        if (!status.equals("MATCH", ignoreCase = true) &&
+            !status.equals("MISMATCH", ignoreCase = true)
+        ) return null
+        val rawDrift = block["D"] ?: block["DRIFT"]
+        val drift = rawDrift?.trim()?.let { v ->
+            // Accept "0.85" and bracketed "[0.85]"; placeholder ranges fail to
+            // parse and fall back to 0.0 without throwing.
+            v.trim('[', ']').trim().toDoubleOrNull()
+        } ?: 0.0
+        val feedback = block["F"] ?: block["FEEDBACK"] ?: ""
         return if (status.equals("MATCH", ignoreCase = true)) AccuracyAuditResult.Match(drift)
         else AccuracyAuditResult.Mismatch(
             drift,
             delineatedList(block["DROPPED"]),
             delineatedList(block["HALLUCINATIONS"]),
-            block["FEEDBACK"].orEmpty()
+            feedback.trim()
         )
     }
 
@@ -747,12 +768,23 @@ class GatekeeperEngine(
     }
 
     internal fun parseStageA(raw: String): StageAPayload {
-        delineatedBlocks(raw).firstOrNull { it.containsKey("HEAT") && it.containsKey("INJECTION") }?.let { b ->
+        // Micro-op single-letter boundaries (H:/I:/R:) first; legacy
+        // HEAT:/INJECTION: supported for backward compatibility. Multi-line
+        // gaps and continuation lines already glued by delineatedBlocks, so
+        // this never throws on blank-line layout — strictness is enforced by
+        // requiring a heat+injection verdict pair.
+        delineatedBlocks(raw).firstOrNull {
+            (it.containsKey("HEAT") || it.containsKey("H")) &&
+                (it.containsKey("INJECTION") || it.containsKey("I"))
+        }?.let { b ->
             val pii = delineatedList(b["AMBIENT_PII"])
+            val heat = (b["H"] ?: b["HEAT"]).takeIf { !it.isNullOrBlank() } ?: "COLD"
+            val injection = (b["I"] ?: b["INJECTION"]).takeIf { !it.isNullOrBlank() } ?: "SAFE"
+            val reason = (b["R"] ?: b["REASON"]).orEmpty()
             return StageAPayload(
-                heat = b["HEAT"].takeIf { !it.isNullOrBlank() } ?: "COLD",
-                injection = b["INJECTION"].takeIf { !it.isNullOrBlank() } ?: "SAFE",
-                injection_reason = b["REASON"].orEmpty(),
+                heat = heat.trim().trim('[', ']').trim().ifBlank { "COLD" },
+                injection = injection.trim().trim('[', ']').trim().ifBlank { "SAFE" },
+                injection_reason = reason,
                 ambient_pii = pii,
                 completeness = b["COMPLETENESS"]?.takeIf { it.isNotBlank() } ?: "READY",
                 missing_context = b["MISSING"].orEmpty()

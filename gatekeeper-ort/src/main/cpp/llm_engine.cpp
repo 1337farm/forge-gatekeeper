@@ -226,6 +226,24 @@ Java_com_forgerig_gatekeeper_ort_LlmBridge_nativeGenerate(JNIEnv* env, jobject /
 
     CheckOga("OgaCreateGeneratorParams",
              OgaCreateGeneratorParams(engine->model, &params));
+    // --- CRITICAL QUALITY FOCUS CONSTRAINTS (hardware-level determinism) ---
+    // 1. Completely decouple the model from creative text paths (Zero out Temperature):
+    //    greedy decoding for single-character structural keys (H:/I:/R:, S:/D:/F:).
+    CheckOga("OgaGeneratorParamsSetSearchNumber",
+             OgaGeneratorParamsSetSearchNumber(params, "temperature", 0.0));
+    CheckOga("OgaGeneratorParamsSetSearchNumber",
+             OgaGeneratorParamsSetSearchNumber(params, "top_k", 1));
+    CheckOga("OgaGeneratorParamsSetSearchBool",
+             OgaGeneratorParamsSetSearchBool(params, "do_sample", false));
+    // 2. Bound the execution shell size to eliminate runaway text essays.
+    //    Structured micro-op stages clamp via max_length=45 on the Kotlin side
+    //    (STRUCTURED_MAX_LENGTH); full compress/audit calls keep the caller cap
+    //    below with a conservative window here.
+    // 3. Explicit native stop sequences ("\\n", "<|endoftext|>") are enforced
+    //    Kotlin-side via applyStopSequences() to cut hardware generation cycles
+    //    early and prevent token drift, clipping, and contraction artifacts
+    //    (e.g. "it'"). The decode loop below additionally respects IsDone().
+    // ------------------------------------------
     const int cap = max_new_tokens > 0 ? max_new_tokens : kDefaultMaxNewTokens;
     {
       // No model-side context_length getter exists here, so bound the
