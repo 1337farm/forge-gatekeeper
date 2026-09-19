@@ -40,6 +40,7 @@ class DemoActivity : Activity() {
     private var lastSteps: List<RunResultFormat.StepItem> = emptyList()
     private var currentPrompt = ""
     private var currentAnswer = ""
+    private var streamLabel = ""
     private val sectionBodies = LinkedHashMap<String, LinearLayout>()
     private val sectionCounts = LinkedHashMap<String, TextView>()
     private val sectionChevrons = LinkedHashMap<String, TextView>()
@@ -76,6 +77,7 @@ class DemoActivity : Activity() {
         val runButton = findViewById<Button>(R.id.runButton)
         val copyButton = findViewById<Button>(R.id.copyButton)
         val statusView = findViewById<TextView>(R.id.statusView)
+        val streamingView = findViewById<TextView>(R.id.streamingView)
         val outputView = findViewById<TextView>(R.id.outputView)
         val telemetryView = findViewById<TextView>(R.id.telemetryView)
         val debugLogView = findViewById<TextView>(R.id.debugLogView)
@@ -182,6 +184,15 @@ class DemoActivity : Activity() {
                         }
                         return
                     }
+                    InferenceService.ACTION_INFER_TOKEN -> {
+                        val label = intent.getStringExtra(InferenceService.EXTRA_STREAM_LABEL).orEmpty()
+                        val text = intent.getStringExtra(InferenceService.EXTRA_STREAM_TEXT).orEmpty()
+                        if (label.isBlank() || text.isBlank()) return
+                        if (label != streamLabel) streamLabel = label
+                        streamingView.visibility = View.VISIBLE
+                        streamingView.text = "$streamLabel…\n" + text.takeLast(1200)
+                        return
+                    }
                     InferenceService.ACTION_INFER_DONE -> {
                         runButton.isEnabled = true
                         val ok = intent.getBooleanExtra(InferenceService.EXTRA_OK, false)
@@ -205,6 +216,9 @@ class DemoActivity : Activity() {
                             )
                         )
                         renderSteps(stepsView, lastSteps)
+                        streamingView.visibility = View.GONE
+                        streamingView.text = ""
+                        streamLabel = ""
                         if (ok) Toast.makeText(this@DemoActivity, "Run finished.", Toast.LENGTH_SHORT).show()
                         return
                     }
@@ -285,6 +299,9 @@ class DemoActivity : Activity() {
             currentAnswer = ""
             outputView.text = ""
             answerPromptView.text = raw
+            streamingView.visibility = View.GONE
+            streamingView.text = ""
+            streamLabel = ""
             telemetryView.text = ""
             debugLogView.text = ""
             pipelineMetaView.removeAllViews()
@@ -659,6 +676,7 @@ class DemoActivity : Activity() {
             filter.addAction(DownloadService.ACTION_PROGRESS)
             filter.addAction(InferenceService.ACTION_INFER_PROGRESS)
             filter.addAction(InferenceService.ACTION_INFER_DEBUG)
+            filter.addAction(InferenceService.ACTION_INFER_TOKEN)
             filter.addAction(InferenceService.ACTION_INFER_DONE)
             registerReceiver(it, filter, RECEIVER_NOT_EXPORTED)
         }

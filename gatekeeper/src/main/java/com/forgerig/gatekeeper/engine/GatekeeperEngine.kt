@@ -71,7 +71,12 @@ class GatekeeperEngine(
         // Per-LLM-call debug events (label, "request"/"response", payload):
         // the demo mirrors these into its on-screen debug log and logcat.
         // Same truncation policy as the log lines below.
-        onLlmEvent: (label: String, direction: String, text: String) -> Unit = { _, _, _ -> }
+        onLlmEvent: (label: String, direction: String, text: String) -> Unit = { _, _, _ -> },
+        // Live token stream (label, cumulative decoded text): fired as the
+        // model decodes so a 30s inference window shows movement instead of
+        // silence. Only backends implementing StreamingInferenceClient emit;
+        // everyone else stays quiet and the pipeline is unchanged.
+        onToken: (label: String, cumulative: String) -> Unit = { _, _ -> }
     ): GatekeeperResult {
         val t0 = System.currentTimeMillis()
         fun elapsed(): String = "%.1fs".format((System.currentTimeMillis() - t0) / 1000.0)
@@ -160,7 +165,7 @@ class GatekeeperEngine(
         val s3 = System.currentTimeMillis()
         onProgress("Stage A security eval: querying LLM…")
         val stageA: StageAPayload = try {
-            val raw = guardedInference(prompts.security, sanitized, config, breaker, "stageA", onLlmEvent)
+            val raw = guardedInference(prompts.security, sanitized, config, breaker, "stageA", onLlmEvent, onToken)
             parseStageA(extractJson(raw))
         } catch (e: TimeoutCancellationException) {
             breaker.recordFailure()
@@ -293,7 +298,11 @@ class GatekeeperEngine(
             logLong("$label request system=${clip(systemPrompt, 300)}\nuser:\n$logUser")
             // Full payload goes to the callback (in-app step rows) as well.
             onLlmEvent(label, "request", "system:\n$systemPrompt\nuser:\n$logUser")
-            val timed = if (inference is TimedInferenceClient) {
+            val timed = if (inference is StreamingInferenceClient) {
+                (inference as StreamingInferenceClient).generateStreaming(systemPrompt, userContent) { partial ->
+                    onToken(label, partial)
+                }
+            } else if (inference is TimedInferenceClient) {
                 (inference as TimedInferenceClient).generateTimed(systemPrompt, userContent)
             } else null
             val text = timed?.text ?: inference.generate(systemPrompt, userContent)
@@ -492,7 +501,8 @@ class GatekeeperEngine(
         systemPrompt: String, userContent: String,
         config: GatekeeperConfig, breaker: CircuitBreaker,
         label: String = "infer",
-        onLlmEvent: (label: String, direction: String, text: String) -> Unit = { _, _, _ -> }
+        onLlmEvent: (label: String, direction: String, text: String) -> Unit = { _, _, _ -> },
+        onToken: (label: String, cumulative: String) -> Unit = { _, _ -> }
     ): String {
         try {
             withTimeout(config.queueWaitTimeoutMs) {
@@ -506,7 +516,9 @@ class GatekeeperEngine(
             logLong("$label request system=${clip(systemPrompt, 300)}\nuser:\n$userContent")
             onLlmEvent(label, "request", "system:\n$systemPrompt\nuser:\n$userContent")
             val out = withTimeout(config.npuExecutionTimeoutMs) {
-                inference.generate(systemPrompt, userContent)
+                (inference as? StreamingInferenceClient)?.generateStreaming(systemPrompt, userContent) { partial ->
+                    onToken(label, partial)
+                }?.text ?: inference.generate(systemPrompt, userContent)
             }
             logLong("$label response (${out.length} chars):\n$out")
             onLlmEvent(label, "response", out)

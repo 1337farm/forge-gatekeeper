@@ -19,3 +19,17 @@ data class TimedGeneration(
 interface TimedInferenceClient : InferenceClient {
     suspend fun generateTimed(systemPrompt: String, userContent: String): TimedGeneration
 }
+
+// Live token streaming: cumulative decoded text is pushed to onToken as it
+// arrives (throttled by the backend) so callers can render progress instead
+// of staring at a silent 30s inference window. Backends that cannot stream
+// simply don't implement this — the engine falls back to generateTimed /
+// generate and onToken stays silent. The returned TimedGeneration carries
+// the final trimmed text plus timing, exactly like generateTimed.
+interface StreamingInferenceClient : InferenceClient {
+    suspend fun generateStreaming(
+        systemPrompt: String,
+        userContent: String,
+        onToken: (cumulative: String) -> Unit
+    ): TimedGeneration
+}

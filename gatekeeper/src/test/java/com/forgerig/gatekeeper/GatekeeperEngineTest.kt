@@ -4,6 +4,8 @@ import android.content.Context
 import com.forgerig.gatekeeper.engine.HardwareEvaluator
 import com.forgerig.gatekeeper.engine.GatekeeperEngine
 import com.forgerig.gatekeeper.engine.InferenceClient
+import com.forgerig.gatekeeper.engine.StreamingInferenceClient
+import com.forgerig.gatekeeper.engine.TimedGeneration
 import com.forgerig.gatekeeper.hardware.HardwareVerdict
 import com.forgerig.gatekeeper.model.GatekeeperConfig
 import com.forgerig.gatekeeper.model.AccuracyAuditResult
@@ -506,5 +508,66 @@ class GatekeeperEngineTest {
         }
         assertTrue(rec.reason.contains("in="))
         assertTrue(rec.reason.contains("out="))
+    }
+
+    @Test
+    fun `streaming client forwards live tokens per stage`() = runTest {
+        val tokens = mutableListOf<String>()
+        val streaming = object : StreamingInferenceClient {
+            var n = 0
+            override suspend fun generate(systemPrompt: String, userContent: String): String =
+                error("must stream")
+            override suspend fun generateStreaming(
+                systemPrompt: String,
+                userContent: String,
+                onToken: (String) -> Unit
+            ): TimedGeneration {
+                n++
+                val text = when (n) {
+                    1 -> stageAJson()
+                    2 -> "SHORT: do X with param 42"
+                    else -> "{\"status\":\"MATCH\",\"drift_score\":0.02," +
+                        "\"dropped_constraints\":[],\"hallucinations\":[],\"corrective_feedback\":\"\"}"
+                }
+                onToken(text.take(5))
+                onToken(text)
+                return TimedGeneration(text, 100, text.length / 4)
+            }
+        }
+        val engine = GatekeeperEngine(ctx(), streaming, eligible())
+        val r = engine.processPrompt(
+            "please do X with param 42 right now without any delay whatsoever",
+            GatekeeperConfig(),
+            onToken = { label, cumulative -> tokens.add("$label:$cumulative") }
+        )
+        assertTrue(r is GatekeeperResult.Success)
+        assertTrue(tokens.any { it.startsWith("stageA:") })
+        assertTrue(tokens.any { it.startsWith("compress#1:") })
+        assertTrue(tokens.any { it.startsWith("audit#1:") })
+        assertTrue(tokens.any { it.endsWith("SHORT: do X with param 42") })
+    }
+
+    @Test
+    fun `non-streaming client never fires onToken`() = runTest {
+        var fired = 0
+        val engine = GatekeeperEngine(
+            ctx(),
+            fakeInference { _, _, n ->
+                when (n) {
+                    1 -> stageAJson()
+                    2 -> "SHORT: do X with param 42"
+                    else -> "{\"status\":\"MATCH\",\"drift_score\":0.02," +
+                        "\"dropped_constraints\":[],\"hallucinations\":[],\"corrective_feedback\":\"\"}"
+                }
+            },
+            eligible()
+        )
+        val r = engine.processPrompt(
+            "please do X with param 42 right now without any delay whatsoever",
+            GatekeeperConfig(),
+            onToken = { _, _ -> fired++ }
+        )
+        assertTrue(r is GatekeeperResult.Success)
+        assertEquals(0, fired)
     }
 }
