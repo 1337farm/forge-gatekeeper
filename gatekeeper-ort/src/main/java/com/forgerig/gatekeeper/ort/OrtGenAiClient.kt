@@ -58,6 +58,21 @@ class OrtGenAiClient(
         const val DETERMINISTIC_TOP_K = 1
         const val STRUCTURED_MAX_LENGTH = 45
         val DETERMINISTIC_STOP_SEQUENCES: Array<String> = arrayOf("\n", "<|endoftext|>")
+        // Native context window (llm_engine.cpp clamps max_length to it).
+        // Matches the default Phi-3-mini-4k model; the Kotlin pre-flight
+        // guard below fails fast against the same bound with a readable
+        // error instead of a cryptic native rejection.
+        const val CONTEXT_WINDOW_TOKENS = 4096
+
+        // Conservative oversize check on the assembled wire prompt: the
+        // chars/4 estimate plus chat-template overhead margin must leave
+        // room for maxNewTokens inside the window. Deliberately one-sided —
+        // it only rejects inputs that clearly cannot fit; everything else
+        // goes to native, which sizes max_length from the true token count.
+        internal fun promptTooLong(promptChars: Int, maxNew: Int): Boolean {
+            val estimate = promptChars / 4 + 256
+            return estimate + maxNew > CONTEXT_WINDOW_TOKENS
+        }
     }
 
     @Suppress("unused")
@@ -139,10 +154,11 @@ class OrtGenAiClient(
     suspend fun generateDeterministicTokens(promptText: String): String =
         withContext(Dispatchers.IO) {
             if (handle == 0L) warmup()
-            val start = android.os.SystemClock.elapsedRealtime()
-            val out = StringBuilder()
             // Bound the execution shell size to eliminate runaway text essays.
             val cap = minOf(maxNewTokens, STRUCTURED_MAX_LENGTH)
+            rejectOversizePrompt(promptText.length, cap)
+            val start = android.os.SystemClock.elapsedRealtime()
+            val out = StringBuilder()
             try {
                 LlmBridge.nativeGenerate(handle, promptText, cap) { token ->
                     out.append(token)
@@ -183,6 +199,12 @@ class OrtGenAiClient(
     override suspend fun generateTimed(systemPrompt: String, userContent: String): TimedGeneration =
         withContext(Dispatchers.IO) {
             if (handle == 0L) warmup()
+            // Fail fast on inputs that cannot fit the context window (with a
+            // readable error) instead of burning seconds on a native call
+            // that can only reject them. Native still sizes max_length from
+            // the true token count for everything that passes here.
+            val promptText = PromptFraming.wrap(systemPrompt, userContent)
+            rejectOversizePrompt(promptText.length, maxNewTokens)
             val start = android.os.SystemClock.elapsedRealtime()
             val out = StringBuilder()
             try {
@@ -192,12 +214,13 @@ class OrtGenAiClient(
                 //    params.setSearchOption("top_k", 1)
                 // 2. Bound the execution shell size to eliminate runaway text essays:
                 //    params.setSearchOption("max_length", 45) for structured keys;
-                //    full compress/audit calls keep the caller cap (native clamps window).
+                //    full calls size max_length from the tokenized prompt
+                //    (llm_engine.cpp), clamped to the context window.
                 // 3. Inject explicit native stop sequences to cut hardware generation cycles early:
                 //    params.setSearchOption("stop_sequences", arrayOf("\n", "<|endoftext|>"))
                 //    Prevents token drift, clipping, and contraction artifacts (e.g., "it'")
                 // ------------------------------------------
-                LlmBridge.nativeGenerate(handle, PromptFraming.wrap(systemPrompt, userContent), maxNewTokens) { token ->
+                LlmBridge.nativeGenerate(handle, promptText, maxNewTokens) { token ->
                     out.append(token)
                 }
             } catch (t: Throwable) {
@@ -225,6 +248,18 @@ class OrtGenAiClient(
             )
             TimedGeneration(text, lastGenerateMs, text.length / 4)
         }
+
+    // Shared oversize rejection so every entry point fails the same way:
+    // the engine routes this into a fallback whose reason names the limit.
+    private fun rejectOversizePrompt(promptChars: Int, maxNew: Int) {
+        if (promptTooLong(promptChars, maxNew)) {
+            val estimate = promptChars / 4 + 256
+            throw IllegalStateException(
+                "ORT prompt too long: ~$estimate input tokens + $maxNew new " +
+                    "exceeds the $CONTEXT_WINDOW_TOKENS-token context window; shorten the input"
+            )
+        }
+    }
 
     override fun close() {
         val h = handle
