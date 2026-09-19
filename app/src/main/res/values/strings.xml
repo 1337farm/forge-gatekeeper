@@ -3,6 +3,7 @@
     <string name="app_name">Gatekeeper Demo</string>
     <string name="hint_input">Type a prompt to test…</string>
     <string name="run">Run gatekeeper</string>
+    <string name="cancel_run">Cancel run</string>
     <string name="bypass_gatekeeper">Bypass gatekeeper</string>
     <string name="force_all_steps">Force all steps (no skips)</string>
     <string name="use_micro_op_prompts">Micro-op prompts (A/B)</string>
