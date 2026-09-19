@@ -164,6 +164,24 @@ object RunResultFormat {
         }
     }
 
+    // Maps a live progress line to the timeline section it belongs in, so
+    // stage status and timing live inside their own card instead of the
+    // status line above. Completion/skip/done lines return null — they
+    // arrive as rows through liveStepItem, not status.
+    fun progressSection(line: String): String? {
+        val body = line.substringAfter("] ").trim()
+        return when {
+            body.startsWith("Stage A") -> "Stage A"
+            body.startsWith("Stage B") -> "Stage B"
+            body.startsWith("Compress") -> "Compress"
+            body.startsWith("Audit") -> "Audit"
+            body.startsWith("Answering") -> "Answer"
+            body.startsWith("Scrub") -> "Scrub"
+            body.startsWith("Hardware") -> "Hardware"
+            else -> null
+        }
+    }
+
     fun stepLabel(step: GatekeeperStep): String = when (step) {
         GatekeeperStep.DETERMINISTIC_SCRUB -> "Scrub"
         GatekeeperStep.HARDWARE_CIRCUIT_CHECK -> "Hardware check"

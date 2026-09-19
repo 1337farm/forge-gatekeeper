@@ -200,6 +200,18 @@ class RunResultFormatTest {
     }
 
     @Test
+    fun `progress lines map to their stage section`() {
+        assertEquals("Stage A", RunResultFormat.progressSection("[ORT XNNPACK] Stage A security eval: querying LLM…"))
+        assertEquals("Compress", RunResultFormat.progressSection("[ORT XNNPACK] Compress iter 1: querying LLM…"))
+        assertEquals("Audit", RunResultFormat.progressSection("[ORT XNNPACK] Audit ✗ MISMATCH drift=0.6 — retrying"))
+        assertEquals("Answer", RunResultFormat.progressSection("[ORT XNNPACK] Answering…"))
+        assertEquals("Scrub", RunResultFormat.progressSection("[ORT XNNPACK] Scrub ✓ 0 redactions"))
+        assertEquals(null, RunResultFormat.progressSection("[ORT XNNPACK] Loading on-device model…"))
+        assertEquals(null, RunResultFormat.progressSection("[ORT XNNPACK] Done ✓ iters=(1,1)"))
+        assertEquals(null, RunResultFormat.progressSection("[ORT XNNPACK] Skip Stage B: no ambient PII"))
+    }
+
+    @Test
     fun `benchmark summary names faster leg with factor`() {
         val line = RunResultFormat.benchmarkSummary(cpuMs = 45200, xnnpackMs = 31800)
         assertTrue(line.contains("CPU 45.2s"))
