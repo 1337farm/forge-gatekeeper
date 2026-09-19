@@ -151,6 +151,19 @@ object RunResultFormat {
         return StepRequest(system, user)
     }
 
+    // Maps a live "Skip <stage>: <reason>" line to the timeline section it
+    // belongs in, so skipped stages resolve their pre-created shell instead
+    // of spawning a stray "Skipped" section mid-run.
+    fun skipSection(rest: String): String {
+        val stage = rest.substringBefore(':').trim()
+        return when {
+            stage.startsWith("Stage B", ignoreCase = true) -> "Stage B"
+            stage.contains("compress", ignoreCase = true) -> "Compress"
+            stage.contains("audit", ignoreCase = true) -> "Audit"
+            else -> "Skipped"
+        }
+    }
+
     fun stepLabel(step: GatekeeperStep): String = when (step) {
         GatekeeperStep.DETERMINISTIC_SCRUB -> "Scrub"
         GatekeeperStep.HARDWARE_CIRCUIT_CHECK -> "Hardware check"
