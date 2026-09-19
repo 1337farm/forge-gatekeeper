@@ -404,12 +404,24 @@ class InferenceService : Service() {
     }
 
     private fun runNotification(line: String): Notification {
+        // Rich ongoing run card: accent color, timestamp, indeterminate
+        // progress sweep, and the full stage line in an expandable BigText
+        // (content text stays a 120-char peek for the collapsed row).
         return Notification.Builder(this, CHANNEL)
             .setContentTitle("Gatekeeper run")
             .setContentText(line.take(120))
             .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setColor(getColor(R.color.gatekeeper_mint))
+            .setSubText("On-device pipeline")
+            .setShowWhen(true)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setProgress(0, 0, true)
+            .setStyle(
+                Notification.BigTextStyle()
+                    .bigText(line)
+                    .setSummaryText("Gatekeeper on-device")
+            )
             .build()
     }
 
@@ -420,6 +432,16 @@ class InferenceService : Service() {
             .setSmallIcon(
                 if (ok) android.R.drawable.stat_sys_download_done
                 else android.R.drawable.stat_notify_error
+            )
+            .setColor(
+                getColor(if (ok) R.color.gatekeeper_mint else R.color.gatekeeper_rose)
+            )
+            .setSubText("Gatekeeper on-device")
+            .setShowWhen(true)
+            .setStyle(
+                Notification.BigTextStyle()
+                    .bigText(status.take(800))
+                    .setSummaryText(if (ok) "Done" else "Failed")
             )
             .build()
     }
