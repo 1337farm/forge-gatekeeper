@@ -76,6 +76,7 @@ class InferenceService : Service() {
         val bypass = intent.getBooleanExtra(EXTRA_BYPASS, false)
         val forceAll = intent.getBooleanExtra(EXTRA_FORCE_ALL, false)
         val provider = intent.getStringExtra(EXTRA_PROVIDER) ?: PROVIDER_XNNPACK
+        val microOp = intent.getBooleanExtra(EXTRA_MICRO_OP, false)
         if (prompt.isBlank()) return START_NOT_STICKY
         acquireWakeLock()
         isRunning = true
@@ -86,7 +87,7 @@ class InferenceService : Service() {
         lastTelemetry = ""
         lastDebug = ""
         lastSteps = ArrayList()
-        runInference(prompt, bypass, forceAll, provider)
+        runInference(prompt, bypass, forceAll, provider, microOp)
         return START_NOT_STICKY
     }
 
@@ -104,7 +105,7 @@ class InferenceService : Service() {
 
     private var debugTag = ""
 
-    private fun runInference(prompt: String, bypass: Boolean, forceAll: Boolean, provider: String) {
+    private fun runInference(prompt: String, bypass: Boolean, forceAll: Boolean, provider: String, microOp: Boolean) {
         scope.launch {
             val nm = getSystemService(NotificationManager::class.java)
             val id = 1
@@ -122,7 +123,7 @@ class InferenceService : Service() {
                 // back (XNNPACK first: it is the default path, so leg 1 often
                 // starts warm). MediaPipe has no provider choice: single run.
                 if (provider == PROVIDER_BOTH && isOrt && !bypass) {
-                    runBenchmark(prompt, forceAll, model, nm, id, monitor)
+                    runBenchmark(prompt, forceAll, model, nm, id, monitor, microOp)
                     return@launch
                 }
                 val useXnnpack = provider != PROVIDER_CPU
@@ -145,7 +146,7 @@ class InferenceService : Service() {
                     finish(nm, id, true, "$mode RAW (gatekeeper bypassed)", rawResult, telemetry, steps, prompt = prompt, answer = rawResult)
                 } else {
                     val leg = executePipeline(
-                        prompt, model, useXnnpack, forceAll, mode, nm, id,
+                        prompt, model, useXnnpack, forceAll, mode, nm, id, microOp,
                         stopSampling = { monitor.stop()?.summaryLine() }
                     )
                     finish(nm, id, true, leg.status, leg.output, leg.telemetry, leg.steps, prompt = prompt, answer = leg.answer ?: leg.output)
@@ -170,6 +171,7 @@ class InferenceService : Service() {
         mode: String,
         nm: NotificationManager,
         id: Int,
+        microOp: Boolean,
         stopSampling: suspend () -> String?
     ): LegResult {
         debugTag = if (mode.contains("CPU")) "cpu" else if (mode.contains("XNNPACK")) "xnnpack" else ""
@@ -188,6 +190,9 @@ class InferenceService : Service() {
             nm, id
         )
         val engine = GatekeeperEngine(applicationContext, client)
+        val promptSet =
+            if (microOp) com.forgerig.gatekeeper.model.PromptSet.MICRO_OP
+            else com.forgerig.gatekeeper.model.PromptSet.LABELED
         // forceAll overrides every config-driven skip (Stage B,
         // compression, audit, tiny-input short-circuit) so every
         // step runs — except hardware-ineligible and malicious
@@ -197,9 +202,13 @@ class InferenceService : Service() {
                 enableStageB = true,
                 enableCompression = true,
                 enableAudit = true,
-                minTokensForCompression = 0
+                minTokensForCompression = 0,
+                promptSet = promptSet
             )
-        } else GatekeeperConfig()
+        } else GatekeeperConfig(promptSet = promptSet)
+        // Prompt set goes to the debug log: the status line is transient,
+        // this is the durable A/B attribution record for comparison runs.
+        debug("config", "promptSet=$promptSet")
         if (forceAll) debug("config", "force-all ON: Stage B + compression + audit + tiny inputs all run")
         // Full Q/A turns, keyed by engine label, joined to their timeline
         // rows at the end — payloads live under their own step, never in a
@@ -248,14 +257,15 @@ class InferenceService : Service() {
         model: java.io.File,
         nm: NotificationManager,
         id: Int,
-        monitor: ResourceMonitor
+        monitor: ResourceMonitor,
+        microOp: Boolean
     ) {
         val xnn = executePipeline(
-            prompt, model, true, forceAll, "[ORT XNNPACK] ", nm, id,
+            prompt, model, true, forceAll, "[ORT XNNPACK] ", nm, id, microOp,
             stopSampling = { null }
         )
         val cpu = executePipeline(
-            prompt, model, false, forceAll, "[ORT CPU] ", nm, id,
+            prompt, model, false, forceAll, "[ORT CPU] ", nm, id, microOp,
             stopSampling = { null }
         )
         val res = monitor.stop()
@@ -361,6 +371,7 @@ class InferenceService : Service() {
         const val EXTRA_PROMPT = "prompt"
         const val EXTRA_BYPASS = "bypass"
         const val EXTRA_FORCE_ALL = "force_all"
+        const val EXTRA_MICRO_OP = "micro_op"
         const val EXTRA_PROVIDER = "provider"
         const val EXTRA_LINE = "line"
         const val EXTRA_OK = "ok"
@@ -402,13 +413,14 @@ class InferenceService : Service() {
         var lastSteps: ArrayList<String> = ArrayList()
             private set
 
-        fun startRun(context: Context, prompt: String, bypass: Boolean, forceAll: Boolean, provider: String) {
+        fun startRun(context: Context, prompt: String, bypass: Boolean, forceAll: Boolean, provider: String, microOp: Boolean) {
             context.startForegroundService(
                 Intent(context, InferenceService::class.java)
                     .setAction(ACTION_RUN)
                     .putExtra(EXTRA_PROMPT, prompt)
                     .putExtra(EXTRA_BYPASS, bypass)
                     .putExtra(EXTRA_FORCE_ALL, forceAll)
+                    .putExtra(EXTRA_MICRO_OP, microOp)
                     .putExtra(EXTRA_PROVIDER, provider)
             )
         }

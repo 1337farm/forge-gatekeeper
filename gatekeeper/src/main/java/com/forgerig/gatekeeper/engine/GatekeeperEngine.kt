@@ -14,7 +14,7 @@ import com.forgerig.gatekeeper.model.StageAPayload
 import com.forgerig.gatekeeper.model.StepExecutionRecord
 import com.forgerig.gatekeeper.model.ExecutionTelemetry
 import com.forgerig.gatekeeper.model.StepStatus
-import com.forgerig.gatekeeper.prompts.SystemPrompts
+import com.forgerig.gatekeeper.prompts.PromptLoader
 import com.forgerig.gatekeeper.sanitizer.DeterministicScrubber
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -83,6 +83,11 @@ class GatekeeperEngine(
             records.add(StepExecutionRecord(order++, step, status, reason, it, d))
         }
         val breaker = CircuitBreaker(config.circuitFailureThreshold, config.circuitCooldownMs)
+        // Stage wording comes from the configured prompt set (LABELED vs
+        // MICRO_OP A/B) so the comparison changes what the model is asked —
+        // never what the engine accepts (both parse through delineatedBlocks).
+        val prompts = PromptLoader.load(config.promptSet)
+        Log.i(tag, "promptSet=${config.promptSet}")
 
         val s1 = System.currentTimeMillis()
         val scrub = DeterministicScrubber.scrub(rawPrompt)
@@ -155,7 +160,7 @@ class GatekeeperEngine(
         val s3 = System.currentTimeMillis()
         onProgress("Stage A security eval: querying LLM…")
         val stageA: StageAPayload = try {
-            val raw = guardedInference(SystemPrompts.securityPrompt(), sanitized, config, breaker, "stageA", onLlmEvent)
+            val raw = guardedInference(prompts.security, sanitized, config, breaker, "stageA", onLlmEvent)
             parseStageA(extractJson(raw))
         } catch (e: TimeoutCancellationException) {
             breaker.recordFailure()
@@ -329,7 +334,7 @@ class GatekeeperEngine(
                 candidate = cleanCandidate(
                     timeInfer(
                         "compress#${compIt + 1}",
-                        SystemPrompts.compressionPrompt(),
+                        prompts.compression,
                         buildCompressionInput(working, corrective, previousFailed)
                     ).trim()
                 )
@@ -407,7 +412,7 @@ class GatekeeperEngine(
             val audit: AccuracyAuditResult = try {
                 val raw = timeInfer(
                     "audit#${audIt + 1}",
-                    SystemPrompts.auditPrompt(),
+                    prompts.audit,
                     "ORIGINAL:\n$working\n\nCOMPRESSED:\n$candidate",
                     // The candidate was just logged verbatim as the compress
                     // response feeding this step — reference it, don't reprint.

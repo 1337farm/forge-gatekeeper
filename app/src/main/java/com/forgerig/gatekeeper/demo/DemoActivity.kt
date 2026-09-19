@@ -81,6 +81,7 @@ class DemoActivity : Activity() {
         val debugLogView = findViewById<TextView>(R.id.debugLogView)
         val bypassSwitch = findViewById<Switch>(R.id.bypassGatekeeper)
         val forceAllSwitch = findViewById<Switch>(R.id.forceAllSteps)
+        val promptSetSwitch = findViewById<Switch>(R.id.promptSetSwitch)
         val modelUrl = findViewById<EditText>(R.id.modelUrl)
         val hfToken = findViewById<EditText>(R.id.hfToken)
         val downloadButton = findViewById<Button>(R.id.downloadButton)
@@ -109,13 +110,16 @@ class DemoActivity : Activity() {
             updateModelSection()
         }
 
-        // Force-all only applies to the gated pipeline; with bypass on the
-        // switch hides so it can never suggest otherwise.
+        // Force-all and the prompt-set A/B only apply to the gated
+        // pipeline; with bypass on the switches hide so they can never
+        // suggest otherwise.
         fun syncForceSwitch() {
             val bypassed = bypassSwitch.isChecked
             if (bypassed) forceAllSwitch.isChecked = false
             forceAllSwitch.visibility = if (bypassed) View.GONE else View.VISIBLE
             forceAllSwitch.isEnabled = !bypassed
+            promptSetSwitch.visibility = if (bypassed) View.GONE else View.VISIBLE
+            promptSetSwitch.isEnabled = !bypassed
         }
         syncForceSwitch()
         bypassSwitch.setOnCheckedChangeListener { _, _ -> syncForceSwitch() }
@@ -295,7 +299,7 @@ class DemoActivity : Activity() {
                 2 -> InferenceService.PROVIDER_BOTH
                 else -> InferenceService.PROVIDER_XNNPACK
             }
-            InferenceService.startRun(this, raw, bypassSwitch.isChecked, forceAllSwitch.isChecked, provider)
+            InferenceService.startRun(this, raw, bypassSwitch.isChecked, forceAllSwitch.isChecked, provider, promptSetSwitch.isChecked)
         }
     }
 
