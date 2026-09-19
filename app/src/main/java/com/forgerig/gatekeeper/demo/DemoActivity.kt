@@ -217,6 +217,7 @@ class DemoActivity : Activity() {
                     }
                     InferenceService.ACTION_INFER_DONE -> {
                         runButton.isEnabled = true
+                        runButton.text = getString(R.string.run)
                         val ok = intent.getBooleanExtra(InferenceService.EXTRA_OK, false)
                         val status = intent.getStringExtra(InferenceService.EXTRA_STATUS).orEmpty()
                         val output = intent.getStringExtra(InferenceService.EXTRA_OUTPUT).orEmpty()
@@ -306,13 +307,15 @@ class DemoActivity : Activity() {
                 return@setOnClickListener
             }
             if (InferenceService.isRunning) {
-                statusView.text = "A run is already in progress — wait for it to finish."
+                statusView.text = "Cancelling…"
+                InferenceService.cancelRun(this)
                 return@setOnClickListener
             }
             // The run lives in a foreground service: minimizing, rotating,
             // or leaving the app never stops inference. Stage lines and the
             // final result arrive back here as broadcasts.
             runButton.isEnabled = false
+            runButton.text = getString(R.string.cancel_run)
             statusView.text = "Running on-device (background-safe)…"
             updateStatusBadge(statusBadge, null, statusView.text.toString())
             startRunPulse(statusView)
@@ -422,6 +425,7 @@ class DemoActivity : Activity() {
         val label = when {
             text.isBlank() || text == "Idle." || text.endsWith("Idle.") -> ""
             text.startsWith("Running") -> "RUNNING"
+            upper.startsWith("CANCELLED") -> "CANCELLED"
             upper.contains("FALLBACK") -> "FALLBACK"
             upper.contains("BLOCKED") -> "BLOCKED"
             upper.contains("SUCCESS") -> "SUCCESS"
@@ -788,6 +792,9 @@ class DemoActivity : Activity() {
         // service — a done broadcast missed while stopped must never leave
         // it disabled with no way to send a new message.
         findViewById<Button>(R.id.runButton).isEnabled = !InferenceService.isRunning
+        findViewById<Button>(R.id.runButton).text = getString(
+            if (InferenceService.isRunning) R.string.cancel_run else R.string.run
+        )
         if (InferenceService.isRunning) {
             findViewById<TextView>(R.id.statusView).text = InferenceService.lastStatus
             findViewById<TextView>(R.id.debugLogView).text = InferenceService.lastDebug

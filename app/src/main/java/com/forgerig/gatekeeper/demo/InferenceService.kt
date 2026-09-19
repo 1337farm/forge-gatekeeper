@@ -63,6 +63,17 @@ class InferenceService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_CANCEL) {
+            // Cooperative cancel: the run coroutine aborts at its next
+            // suspension point (between stages — a blocking native decode
+            // can't be preempted mid-call) and lands in the cancelled
+            // finish path below, which resets everything and tells the UI.
+            if (isRunning) {
+                Log.i(TAG, "cancel requested — aborting run")
+                runJob?.cancel()
+            }
+            return START_NOT_STICKY
+        }
         if (intent?.action != ACTION_RUN) return START_NOT_STICKY
         if (isRunning) {
             Log.i(TAG, "run already in flight — ignoring duplicate tap")
@@ -107,6 +118,7 @@ class InferenceService : Service() {
     )
 
     private var debugTag = ""
+    private var runJob: Job? = null
 
     // Liveness heartbeat: model load (up to 120s) and single inference legs
     // (up to 30s) are otherwise silent, which reads as a hang. Every 5s the
@@ -149,7 +161,8 @@ class InferenceService : Service() {
     }
 
     private fun runInference(prompt: String, bypass: Boolean, forceAll: Boolean, provider: String, microOp: Boolean) {
-        scope.launch {
+        runJob?.cancel()
+        runJob = scope.launch {
             val nm = getSystemService(NotificationManager::class.java)
             val id = 1
             startForeground(id, runNotification("Running on-device…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
@@ -196,7 +209,11 @@ class InferenceService : Service() {
                     finish(nm, id, true, leg.status, leg.output, leg.telemetry, leg.steps, prompt = prompt, answer = leg.answer ?: leg.output)
                 }
             } catch (t: Throwable) {
-                if (t is CancellationException) throw t
+                if (t is CancellationException) {
+                    monitor.stop(suppressReport = true)
+                    finish(nm, id, false, "Cancelled by user.", "", "", prompt = prompt)
+                    return@launch
+                }
                 monitor.stop(suppressReport = true)
                 BackendCache.drop()
                 finish(nm, id, false, "Error: ${t.message}", "", "", prompt = prompt)
@@ -385,6 +402,7 @@ class InferenceService : Service() {
         answer: String = ""
     ) {
         stopHeartbeat()
+        runJob = null
         lastStatus = status
         lastPrompt = prompt
         lastOutput = output
@@ -431,8 +449,13 @@ class InferenceService : Service() {
     }
 
     private fun doneNotification(ok: Boolean, status: String): Notification {
+        val title = when {
+            status.startsWith("Cancelled") -> "Run cancelled"
+            ok -> "Run finished"
+            else -> "Run failed"
+        }
         return Notification.Builder(this, CHANNEL)
-            .setContentTitle(if (ok) "Run finished" else "Run failed")
+            .setContentTitle(title)
             .setContentText(status.take(120))
             .setSmallIcon(
                 if (ok) android.R.drawable.stat_sys_download_done
@@ -446,13 +469,17 @@ class InferenceService : Service() {
             .setStyle(
                 Notification.BigTextStyle()
                     .bigText(status.take(800))
-                    .setSummaryText(if (ok) "Done" else "Failed")
+                    .setSummaryText(
+                        if (status.startsWith("Cancelled")) "Cancelled"
+                        else if (ok) "Done" else "Failed"
+                    )
             )
             .build()
     }
 
     companion object {
         const val ACTION_RUN = "com.forgerig.gatekeeper.demo.action.RUN"
+        const val ACTION_CANCEL = "com.forgerig.gatekeeper.demo.action.CANCEL"
         const val ACTION_INFER_PROGRESS = "com.forgerig.gatekeeper.demo.action.INFER_PROGRESS"
         const val ACTION_INFER_DONE = "com.forgerig.gatekeeper.demo.action.INFER_DONE"
         const val ACTION_INFER_DEBUG = "com.forgerig.gatekeeper.demo.action.INFER_DEBUG"
@@ -513,6 +540,13 @@ class InferenceService : Service() {
                     .putExtra(EXTRA_FORCE_ALL, forceAll)
                     .putExtra(EXTRA_MICRO_OP, microOp)
                     .putExtra(EXTRA_PROVIDER, provider)
+            )
+        }
+
+        fun cancelRun(context: Context) {
+            context.startService(
+                Intent(context, InferenceService::class.java)
+                    .setAction(ACTION_CANCEL)
             )
         }
     }
