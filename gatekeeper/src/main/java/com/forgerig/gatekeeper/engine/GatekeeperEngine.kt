@@ -24,15 +24,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 fun interface HardwareEvaluator {
-    fun evaluate(ctx: Context, config: GatekeeperConfig): HardwareVerdict
+    fun evaluate(config: GatekeeperConfig): HardwareVerdict
 }
 
 class GatekeeperEngine(
-    private val appContext: Context,
     private val inference: InferenceClient,
-    private val hardwareEvaluator: HardwareEvaluator = HardwareEvaluator { ctx, cfg ->
-        HardwareCapabilityEngine.evaluate(ctx, cfg.minRamBytes)
-    }
+    private val hardwareEvaluator: HardwareEvaluator
 ) {
     private val npuMutex = Mutex()
     private val tag = "ForgeGatekeeper"
@@ -132,7 +129,7 @@ class GatekeeperEngine(
 
         val s2 = System.currentTimeMillis()
         val verdict: HardwareVerdict = try {
-            hardwareEvaluator.evaluate(appContext, config)
+            hardwareEvaluator.evaluate(config)
         } catch (t: Throwable) {
             HardwareVerdict.Ineligible("hardware check error: ${t.message}")
         }
