@@ -181,6 +181,17 @@ class RunResultFormatTest {
     }
 
     @Test
+    fun `step ui supports pending shells and live short labels`() {
+        val pending = RunResultFormat.stepUi(RunResultFormat.StepItem("pending", "Compress", ""))
+        assertEquals("PENDING", pending.statusText)
+        assertEquals("COMPRESS", pending.stageText)
+        val audit = RunResultFormat.stepUi(RunResultFormat.StepItem("done", "Audit", ""))
+        assertEquals("AUDIT", audit.stageText)
+        val answer = RunResultFormat.stepUi(RunResultFormat.StepItem("pending", "Answer", ""))
+        assertEquals("ANSWER", answer.stageText)
+    }
+
+    @Test
     fun `benchmark summary names faster leg with factor`() {
         val line = RunResultFormat.benchmarkSummary(cpuMs = 45200, xnnpackMs = 31800)
         assertTrue(line.contains("CPU 45.2s"))

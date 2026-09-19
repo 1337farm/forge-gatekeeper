@@ -38,11 +38,13 @@ object RunResultFormat {
         val statusText = when (item.kind) {
             "done" -> "DONE"
             "skip" -> "SKIPPED"
+            "pending" -> "PENDING"
             else -> "FAILED"
         }
         val statusTone = when (item.kind) {
             "done" -> "success"
             "skip" -> "muted"
+            "pending" -> "muted"
             else -> "warning"
         }
         val upper = item.detail.uppercase()
@@ -57,6 +59,9 @@ object RunResultFormat {
                 upper.contains("MATCH") -> "success"
                 else -> "info"
             }
+            // Live short labels ("Compress ✓ …") share their final pills.
+            item.label.startsWith("Compress") -> "COMPRESS" to if (item.kind == "fail") "error" else "warning"
+            item.label.startsWith("Audit") -> "AUDIT" to "info"
             item.label.startsWith("Fallback") -> "FALLBACK" to "warning"
             item.label.startsWith("Answer") -> "ANSWER" to "success"
             item.label.startsWith("Done") -> "DONE" to "success"
