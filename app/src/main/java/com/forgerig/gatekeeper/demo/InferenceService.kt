@@ -121,10 +121,10 @@ class InferenceService : Service() {
     private var runJob: Job? = null
 
     // Liveness heartbeat: model load (up to 120s) and single inference legs
-    // (up to 30s) are otherwise silent, which reads as a hang. Every 5s the
-    // service re-emits the current stage line with an elapsed counter so the
-    // UI visibly stays alive. baseStatus is the last real stage line; ticks
-    // never rewrite it, so stage detection downstream can't desync.
+    // (up to 120s) are otherwise silent, which reads as a hang. Every 5s the
+    // service emits a dedicated heartbeat carrying the current stage line
+    // plus total run elapsed — never on the progress channel, so stage-row
+    // detection downstream can't desync and lastStatus stays meaningful.
     private var heartbeatJob: Job? = null
     private var baseStatus: String = ""
     private var runStartMs: Long = 0L
@@ -137,20 +137,19 @@ class InferenceService : Service() {
                 delay(5000)
                 if (!isRunning) return@launch
                 val base = baseStatus
-                // A tick re-emitting a ✓ completion line would plant a
-                // duplicate timeline row (live rows key off ✓) — and ticks
-                // only matter during silent stretches anyway, so skip them.
+                // A tick for a ✓ completion line is useless (that stage is
+                // over) — and ticks only matter during silent stretches, so
+                // skip them.
                 if (base.contains("✓")) continue
                 val elapsed =
                     (android.os.SystemClock.elapsedRealtime() - runStartMs) / 1000
-                val line = "$base · ${elapsed}s elapsed"
-                lastStatus = line
                 sendBroadcast(
-                    Intent(ACTION_INFER_PROGRESS)
+                    Intent(ACTION_INFER_HEARTBEAT)
                         .setPackage(packageName)
-                        .putExtra(EXTRA_LINE, line)
+                        .putExtra(EXTRA_HEARTBEAT_BASE, base)
+                        .putExtra(EXTRA_HEARTBEAT_ELAPSED_S, elapsed)
                 )
-                nm.notify(id, runNotification(line))
+                nm.notify(id, runNotification("$base · ${elapsed}s elapsed"))
             }
         }
     }
@@ -403,6 +402,9 @@ class InferenceService : Service() {
     ) {
         stopHeartbeat()
         runJob = null
+        val elapsedS =
+            if (runStartMs > 0) (android.os.SystemClock.elapsedRealtime() - runStartMs) / 1000
+            else -1L
         lastStatus = status
         lastPrompt = prompt
         lastOutput = output
@@ -419,6 +421,7 @@ class InferenceService : Service() {
                 .putExtra(EXTRA_OUTPUT, output)
                 .putExtra(EXTRA_ANSWER, answer)
                 .putExtra(EXTRA_TELEMETRY, telemetry)
+                .putExtra(EXTRA_ELAPSED_S, elapsedS)
                 .putStringArrayListExtra(EXTRA_STEPS, steps)
         )
         isRunning = false
@@ -484,6 +487,7 @@ class InferenceService : Service() {
         const val ACTION_INFER_DONE = "com.forgerig.gatekeeper.demo.action.INFER_DONE"
         const val ACTION_INFER_DEBUG = "com.forgerig.gatekeeper.demo.action.INFER_DEBUG"
         const val ACTION_INFER_TOKEN = "com.forgerig.gatekeeper.demo.action.INFER_TOKEN"
+        const val ACTION_INFER_HEARTBEAT = "com.forgerig.gatekeeper.demo.action.INFER_HEARTBEAT"
         const val EXTRA_PROMPT = "prompt"
         const val EXTRA_BYPASS = "bypass"
         const val EXTRA_FORCE_ALL = "force_all"
@@ -499,6 +503,9 @@ class InferenceService : Service() {
         const val EXTRA_DEBUG_LINE = "debug_line"
         const val EXTRA_STREAM_LABEL = "stream_label"
         const val EXTRA_STREAM_TEXT = "stream_text"
+        const val EXTRA_HEARTBEAT_BASE = "heartbeat_base"
+        const val EXTRA_HEARTBEAT_ELAPSED_S = "heartbeat_elapsed_s"
+        const val EXTRA_ELAPSED_S = "elapsed_s"
         private const val CHANNEL = "runs"
         private const val TAG = "InferenceService"
         private const val MAX_DEBUG_LINES = 200

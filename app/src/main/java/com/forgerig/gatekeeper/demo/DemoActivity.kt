@@ -47,7 +47,17 @@ class DemoActivity : Activity() {
     // "Waiting for stage…" placeholders in pre-created shells, removed as
     // soon as a section shows real content (live stream or finished card).
     private val sectionPlaceholders = LinkedHashMap<String, View>()
+    // Per-section stopwatch pills ("12s") in each header. A section's clock
+    // starts when it first shows activity and ticks on heartbeats; the
+    // active section's pill pulses. Frozen on completion.
+    private val sectionTimers = LinkedHashMap<String, TextView>()
+    private val sectionStartMs = LinkedHashMap<String, Long>()
+    private var activeTimerKey: String? = null
+    // Last overall (non-stage) status line; heartbeat ticks append the total
+    // counter to it instead of flashing stage lines above the list.
+    private var overallStatus = "Running on-device…"
     private var pulseAnimator: ObjectAnimator? = null
+    private var pulsedView: View? = null
     private val sectionBodies = LinkedHashMap<String, LinearLayout>()
     private val sectionCounts = LinkedHashMap<String, TextView>()
     private val sectionChevrons = LinkedHashMap<String, TextView>()
@@ -168,14 +178,28 @@ class DemoActivity : Activity() {
                     InferenceService.ACTION_INFER_PROGRESS -> {
                         val line = intent.getStringExtra(InferenceService.EXTRA_LINE)
                             ?: return
-                        statusView.text = line
-                        // Completed stage lines grow the timeline live (with
-                        // the container's layout animation); the in-progress
-                        // "…querying" lines only move the status above. The
-                        // authoritative numbered render on DONE replaces these.
-                        liveStepItem(line)?.let { item ->
+                        val item = liveStepItem(line)
+                        if (item != null) {
+                            // Completed stage lines grow the timeline live (with
+                            // the container's layout animation); the finished
+                            // card freezes its section clock. The authoritative
+                            // numbered render on DONE replaces these.
                             lastSteps = lastSteps + item
                             addGroupedStep(stepsView, lastSteps.size - 1, item, animate = true)
+                        } else {
+                            // In-progress stage lines live inside their own
+                            // section — the status line above stays overall —
+                            // while overall lines still move the status.
+                            RunResultFormat.progressSection(line)?.let { key ->
+                                val body = ensureLiveSection(key)
+                                sectionPlaceholders.remove(key)?.let { body.removeView(it) }
+                                markSectionActive(key)
+                                liveRow(key, body).text = line.substringAfter("] ", line).trim()
+                                sectionCounts[key]?.text = "${body.childCount}"
+                            } ?: run {
+                                overallStatus = line
+                                statusView.text = line
+                            }
                         }
                         return
                     }
@@ -198,21 +222,21 @@ class DemoActivity : Activity() {
                         tokenSection(label)?.let { key ->
                             val body = ensureLiveSection(key)
                             sectionPlaceholders.remove(key)?.let { body.removeView(it) }
-                            val live = sectionLiveViews.getOrPut(key) {
-                                TextView(this@DemoActivity).apply {
-                                    textSize = 12f
-                                    setTypeface(android.graphics.Typeface.MONOSPACE)
-                                    setTextColor(getColor(R.color.gatekeeper_muted))
-                                    layoutParams = LinearLayout.LayoutParams(
-                                        LinearLayout.LayoutParams.MATCH_PARENT,
-                                        LinearLayout.LayoutParams.WRAP_CONTENT
-                                    ).apply { topMargin = dp(6) }
-                                    body.addView(this)
-                                }
-                            }
+                            markSectionActive(key)
+                            val live = liveRow(key, body)
                             live.text = "Decoding $label…\n" + text.takeLast(800)
                             sectionCounts[key]?.text = "${body.childCount}"
                         }
+                        return
+                    }
+                    InferenceService.ACTION_INFER_HEARTBEAT -> {
+                        val base = intent.getStringExtra(InferenceService.EXTRA_HEARTBEAT_BASE).orEmpty()
+                        val elapsed = intent.getLongExtra(InferenceService.EXTRA_HEARTBEAT_ELAPSED_S, -1)
+                        // The tick's total counter belongs on the overall
+                        // status; the ticking stage's own badge counts its
+                        // section clock.
+                        if (elapsed >= 0) statusView.text = "$overallStatus · ${elapsed}s"
+                        RunResultFormat.progressSection(base)?.let { tickSectionTimer(it) }
                         return
                     }
                     InferenceService.ACTION_INFER_DONE -> {
@@ -240,6 +264,16 @@ class DemoActivity : Activity() {
                         )
                         renderSteps(stepsView, lastSteps)
                         stopRunPulse(statusView)
+                        // Total run time lands as a badge by the result,
+                        // next to the status pill above the final message.
+                        val totalBadge = findViewById<TextView>(R.id.totalBadge)
+                        val elapsedS = intent.getLongExtra(InferenceService.EXTRA_ELAPSED_S, -1)
+                        if (elapsedS >= 0) {
+                            stylePill(totalBadge, "TOTAL ${elapsedS}s", "info")
+                            totalBadge.visibility = View.VISIBLE
+                        } else {
+                            totalBadge.visibility = View.GONE
+                        }
                         if (ok) Toast.makeText(this@DemoActivity, "Run finished.", Toast.LENGTH_SHORT).show()
                         return
                     }
@@ -317,7 +351,9 @@ class DemoActivity : Activity() {
             runButton.isEnabled = false
             runButton.text = getString(R.string.cancel_run)
             statusView.text = "Running on-device (background-safe)…"
+            overallStatus = statusView.text.toString()
             updateStatusBadge(statusBadge, null, statusView.text.toString())
+            findViewById<TextView>(R.id.totalBadge).visibility = View.GONE
             startRunPulse(statusView)
             currentPrompt = raw
             currentAnswer = ""
@@ -333,6 +369,9 @@ class DemoActivity : Activity() {
             sectionChevrons.clear()
             sectionLiveViews.clear()
             sectionPlaceholders.clear()
+            sectionTimers.clear()
+            sectionStartMs.clear()
+            activeTimerKey = null
             // Sections exist from tap time: each fills as its stage starts
             // (live decode), progresses (finished cards), and completes.
             // Bypass runs a single Answer turn, so shells would only linger
@@ -478,6 +517,9 @@ class DemoActivity : Activity() {
         sectionChevrons.clear()
         sectionLiveViews.clear()
         sectionPlaceholders.clear()
+        sectionTimers.clear()
+        sectionStartMs.clear()
+        activeTimerKey = null
         items.forEachIndexed { index, item -> addGroupedStep(container, index, item, animate = false) }
     }
 
@@ -516,6 +558,58 @@ class DemoActivity : Activity() {
 
     // Engine turn labels ("compress#2", "audit#1", "answer") to the live
     // section their tokens decode into. Unknown labels stream nowhere.
+    // Marks a section active: starts its stopwatch on first sight, shows
+    // the timer badge, and moves the running pulse onto it. Idempotent —
+    // repeat calls for the same stage only refresh the pulse target.
+    private fun markSectionActive(key: String) {
+        ensureLiveSection(key)
+        if (!sectionStartMs.containsKey(key)) {
+            sectionStartMs[key] = android.os.SystemClock.elapsedRealtime()
+        }
+        val timer = sectionTimers[key] ?: return
+        if (timer.visibility != View.VISIBLE) {
+            timer.text = "0s"
+            timer.visibility = View.VISIBLE
+        }
+        activeTimerKey = key
+        pulse(timer)
+    }
+
+    private fun tickSectionTimer(key: String) {
+        val start = sectionStartMs[key] ?: return
+        val timer = sectionTimers[key] ?: return
+        if (timer.visibility != View.VISIBLE) timer.visibility = View.VISIBLE
+        val s = (android.os.SystemClock.elapsedRealtime() - start) / 1000
+        timer.text = "${s}s"
+        if (activeTimerKey == key) pulse(timer)
+    }
+
+    // A finished card freezes its section clock: the pulse moves on (or
+    // stops) and the badge keeps its last value as the stage total.
+    private fun freezeSectionTimer(key: String) {
+        if (activeTimerKey == key) {
+            activeTimerKey = null
+            stopPulse()
+        }
+    }
+
+    // The single in-section live row per stage: decode streams and stage
+    // status lines share it (last writer wins) until the finished card
+    // supersedes it.
+    private fun liveRow(key: String, body: LinearLayout): TextView =
+        sectionLiveViews.getOrPut(key) {
+            TextView(this).apply {
+                textSize = 12f
+                setTypeface(android.graphics.Typeface.MONOSPACE)
+                setTextColor(getColor(R.color.gatekeeper_muted))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(6) }
+                body.addView(this)
+            }
+        }
+
     private fun tokenSection(label: String): String? = when {
         label == "stageA" -> "Stage A"
         label.startsWith("compress#") -> "Compress"
@@ -524,21 +618,37 @@ class DemoActivity : Activity() {
         else -> null
     }
 
-    private fun startRunPulse(statusView: TextView) {
-        stopRunPulse(statusView)
-        statusView.setShadowLayer(16f, 0f, 0f, getColor(R.color.gatekeeper_mint))
-        pulseAnimator = ObjectAnimator.ofFloat(statusView, "alpha", 1f, 0.45f, 1f).apply {
+    // The single running pulse lives on the active stage's timer pill —
+    // the flash sits on the stage box with its timing, not on the status
+    // line above the list.
+    private fun pulse(view: TextView) {
+        if (pulsedView === view && pulseAnimator != null) return
+        stopPulse()
+        view.setShadowLayer(16f, 0f, 0f, getColor(R.color.gatekeeper_mint))
+        pulsedView = view
+        pulseAnimator = ObjectAnimator.ofFloat(view, "alpha", 1f, 0.45f, 1f).apply {
             duration = 1200
             repeatCount = ObjectAnimator.INFINITE
             start()
         }
     }
 
-    private fun stopRunPulse(statusView: TextView) {
+    private fun stopPulse() {
         pulseAnimator?.cancel()
         pulseAnimator = null
-        statusView.alpha = 1f
-        statusView.setShadowLayer(0f, 0f, 0f, android.graphics.Color.TRANSPARENT)
+        (pulsedView as? TextView)?.let {
+            it.alpha = 1f
+            it.setShadowLayer(0f, 0f, 0f, android.graphics.Color.TRANSPARENT)
+        }
+        pulsedView = null
+    }
+
+    private fun startRunPulse(statusView: TextView) {
+        pulse(statusView)
+    }
+
+    private fun stopRunPulse(statusView: TextView) {
+        stopPulse()
     }
 
     private fun ensureSection(container: LinearLayout, item: RunResultFormat.StepItem, ui: RunResultFormat.StepUi): LinearLayout {
@@ -579,12 +689,21 @@ class DemoActivity : Activity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { marginEnd = dp(8) }
         }
+        // Per-stage stopwatch badge ("12s"): hidden until the stage shows
+        // activity, counting while active, frozen on completion.
+        val timer = pill("0s", "info").apply {
+            visibility = View.GONE
+            layoutParams = (layoutParams as LinearLayout.LayoutParams).apply {
+                marginEnd = dp(8)
+            }
+        }
         val chevron = TextView(this).apply {
             text = "▼"
             textSize = 16f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             setTextColor(getColor(R.color.gatekeeper_muted))
         }
+        header.addView(timer)
         header.addView(count)
         header.addView(chevron)
         val body = animatedColumn().apply {
@@ -599,6 +718,7 @@ class DemoActivity : Activity() {
         sectionBodies[item.label] = body
         sectionCounts[item.label] = count
         sectionChevrons[item.label] = chevron
+        sectionTimers[item.label] = timer
         header.setOnClickListener {
             val expanded = body.visibility == View.VISIBLE
             body.visibility = if (expanded) View.GONE else View.VISIBLE
@@ -611,9 +731,11 @@ class DemoActivity : Activity() {
         val ui = RunResultFormat.stepUi(item)
         val body = ensureSection(container, item, ui)
         // A finished card supersedes the live decode row and the waiting
-        // placeholder — the section now shows final content only.
+        // placeholder — the section now shows final content only — and
+        // freezes the section clock at its final value.
         sectionPlaceholders.remove(item.label)?.let { body.removeView(it) }
         sectionLiveViews.remove(item.label)?.let { body.removeView(it) }
+        freezeSectionTimer(item.label)
         val card = stepCard(index, item, ui)
         body.addView(card)
         if (animate) {
@@ -784,6 +906,7 @@ class DemoActivity : Activity() {
             filter.addAction(InferenceService.ACTION_INFER_PROGRESS)
             filter.addAction(InferenceService.ACTION_INFER_DEBUG)
             filter.addAction(InferenceService.ACTION_INFER_TOKEN)
+            filter.addAction(InferenceService.ACTION_INFER_HEARTBEAT)
             filter.addAction(InferenceService.ACTION_INFER_DONE)
             registerReceiver(it, filter, RECEIVER_NOT_EXPORTED)
         }
@@ -797,6 +920,7 @@ class DemoActivity : Activity() {
         )
         if (InferenceService.isRunning) {
             findViewById<TextView>(R.id.statusView).text = InferenceService.lastStatus
+            overallStatus = InferenceService.lastStatus
             findViewById<TextView>(R.id.debugLogView).text = InferenceService.lastDebug
             currentPrompt = InferenceService.lastPrompt.ifBlank { currentPrompt }
             findViewById<TextView>(R.id.answerPromptView).text = currentPrompt
