@@ -11,6 +11,8 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import com.forgerig.gatekeeper.engine.GatekeeperEngine
+import com.forgerig.gatekeeper.engine.HardwareEvaluator
+import com.forgerig.gatekeeper.hardware.HardwareCapabilityEngine
 import com.forgerig.gatekeeper.model.GatekeeperConfig
 import com.forgerig.gatekeeper.model.GatekeeperResult
 import kotlinx.coroutines.CancellationException
@@ -249,7 +251,10 @@ class InferenceService : Service() {
                 (if (warmMs >= 0) " in ${warmMs}ms" else "") + " — generating…",
             nm, id
         )
-        val engine = GatekeeperEngine(applicationContext, client)
+        val hardwareEvaluator = HardwareEvaluator { config ->
+            HardwareCapabilityEngine.evaluate(applicationContext, config.minRamBytes)
+        }
+        val engine = GatekeeperEngine(client, hardwareEvaluator)
         val promptSet =
             if (microOp) com.forgerig.gatekeeper.model.PromptSet.MICRO_OP
             else com.forgerig.gatekeeper.model.PromptSet.LABELED
