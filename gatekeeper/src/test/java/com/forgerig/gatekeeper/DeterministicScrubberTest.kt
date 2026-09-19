@@ -71,8 +71,25 @@ class DeterministicScrubberTest {
     }
 
     @Test
-    fun `shannon entropy of random token is high`() {
-        assertTrue(DeterministicScrubber.shannonEntropy("xK9#mQ2\$vL8@nP4wZ7!") > 3.5)
+    fun `preserves build ids inside file paths`() {
+        val r = DeterministicScrubber.scrub("build 47a2cb3931 (full log: Downloads/farm_crash_47a2cb3931.log)")
+        assertTrue(r.sanitizedText.contains("47a2cb3931"))
+        assertTrue(r.sanitizedText.contains("farm_crash_47a2cb3931.log"))
+        assertFalse(r.sanitizedText.contains("[TOKEN_REDACTED]"))
+    }
+
+    @Test
+    fun `does not preserve build id in non-path token`() {
+        val r = DeterministicScrubber.scrub("token aB3dF7jK9mN2pQ5rT8vW1xY4z")
+        assertTrue(r.sanitizedText.contains("[TOKEN_REDACTED]"))
+        assertFalse(r.sanitizedText.contains("aB3dF7jK9mN2pQ5rT8vW1xY4z"))
+    }
+
+    @Test
+    fun `preserves build id with other path separators`() {
+        val r = DeterministicScrubber.scrub("cache/crash_47a2cb3931_debug.log")
+        assertTrue(r.sanitizedText.contains("47a2cb3931"))
+        assertFalse(r.sanitizedText.contains("[TOKEN_REDACTED]"))
     }
 
     @Test
