@@ -16,8 +16,11 @@ import com.forgerig.gatekeeper.model.GatekeeperResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 // Runs the gatekeeper pipeline in a foreground service so minimizing (or
@@ -105,6 +108,41 @@ class InferenceService : Service() {
 
     private var debugTag = ""
 
+    // Liveness heartbeat: model load (up to 120s) and single inference legs
+    // (up to 30s) are otherwise silent, which reads as a hang. Every 5s the
+    // service re-emits the current stage line with an elapsed counter so the
+    // UI visibly stays alive. baseStatus is the last real stage line; ticks
+    // never rewrite it, so stage detection downstream can't desync.
+    private var heartbeatJob: Job? = null
+    private var baseStatus: String = ""
+    private var runStartMs: Long = 0L
+
+    private fun startHeartbeat(nm: NotificationManager, id: Int) {
+        heartbeatJob?.cancel()
+        runStartMs = android.os.SystemClock.elapsedRealtime()
+        heartbeatJob = scope.launch {
+            while (isActive) {
+                delay(5000)
+                if (!isRunning) return@launch
+                val elapsed =
+                    (android.os.SystemClock.elapsedRealtime() - runStartMs) / 1000
+                val line = "$baseStatus · ${elapsed}s elapsed"
+                lastStatus = line
+                sendBroadcast(
+                    Intent(ACTION_INFER_PROGRESS)
+                        .setPackage(packageName)
+                        .putExtra(EXTRA_LINE, line)
+                )
+                nm.notify(id, runNotification(line))
+            }
+        }
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+    }
+
     private fun runInference(prompt: String, bypass: Boolean, forceAll: Boolean, provider: String, microOp: Boolean) {
         scope.launch {
             val nm = getSystemService(NotificationManager::class.java)
@@ -112,6 +150,7 @@ class InferenceService : Service() {
             startForeground(id, runNotification("Running on-device…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
             val monitor = ResourceMonitor(this@InferenceService, scope)
             monitor.start()
+            startHeartbeat(nm, id)
             try {
                 val model = ModelFiles.pick(filesDir)
                 if (model == null) {
@@ -221,16 +260,36 @@ class InferenceService : Service() {
             onProgress = { line -> publish("$mode$line", nm, id) },
             onLlmEvent = { label, direction, text ->
                 if (direction == "request") qaReq[label] = text else qaRes[label] = text
+            },
+            onToken = { label, cumulative ->
+                sendBroadcast(
+                    Intent(ACTION_INFER_TOKEN)
+                        .setPackage(packageName)
+                        .putExtra(EXTRA_STREAM_LABEL, label)
+                        .putExtra(EXTRA_STREAM_TEXT, cumulative)
+                )
             }
         )
         val resourceLine = stopSampling()
         // SUCCESS answers the safe prompt so the output shows a
         // real LLM reply, not just the sanitized echo. Blocked /
-        // fallback stay answer-free by design.
+        // fallback stay answer-free by design. The answer streams live
+        // like every other stage when the backend supports it.
         val answer = if (result is GatekeeperResult.Success) {
             publish("$mode Answering…", nm, id)
-            runCatching { client.generate("", result.safeCompressedPrompt) }
-                .getOrElse { "Answer failed: ${it.message}" }
+            runCatching {
+                val streaming = client as? com.forgerig.gatekeeper.engine.StreamingInferenceClient
+                if (streaming != null) {
+                    streaming.generateStreaming("", result.safeCompressedPrompt) { partial ->
+                        sendBroadcast(
+                            Intent(ACTION_INFER_TOKEN)
+                                .setPackage(packageName)
+                                .putExtra(EXTRA_STREAM_LABEL, "answer")
+                                .putExtra(EXTRA_STREAM_TEXT, partial)
+                        )
+                    }.text
+                } else client.generate("", result.safeCompressedPrompt)
+            }.getOrElse { "Answer failed: ${it.message}" }
         } else null
         val (status, output, telemetry) =
             RunResultFormat.format(result, mode, resourceLine, answer)
@@ -290,6 +349,7 @@ class InferenceService : Service() {
 
     private fun publish(line: String, nm: NotificationManager, id: Int) {
         lastStatus = line
+        baseStatus = line
         sendBroadcast(
             Intent(ACTION_INFER_PROGRESS)
                 .setPackage(packageName)
@@ -319,6 +379,7 @@ class InferenceService : Service() {
         prompt: String = "",
         answer: String = ""
     ) {
+        stopHeartbeat()
         lastStatus = status
         lastPrompt = prompt
         lastOutput = output
@@ -368,6 +429,7 @@ class InferenceService : Service() {
         const val ACTION_INFER_PROGRESS = "com.forgerig.gatekeeper.demo.action.INFER_PROGRESS"
         const val ACTION_INFER_DONE = "com.forgerig.gatekeeper.demo.action.INFER_DONE"
         const val ACTION_INFER_DEBUG = "com.forgerig.gatekeeper.demo.action.INFER_DEBUG"
+        const val ACTION_INFER_TOKEN = "com.forgerig.gatekeeper.demo.action.INFER_TOKEN"
         const val EXTRA_PROMPT = "prompt"
         const val EXTRA_BYPASS = "bypass"
         const val EXTRA_FORCE_ALL = "force_all"
@@ -381,6 +443,8 @@ class InferenceService : Service() {
         const val EXTRA_TELEMETRY = "telemetry"
         const val EXTRA_STEPS = "steps"
         const val EXTRA_DEBUG_LINE = "debug_line"
+        const val EXTRA_STREAM_LABEL = "stream_label"
+        const val EXTRA_STREAM_TEXT = "stream_text"
         private const val CHANNEL = "runs"
         private const val TAG = "InferenceService"
         private const val MAX_DEBUG_LINES = 200

@@ -5,6 +5,7 @@ import android.util.Log
 import com.forgerig.gatekeeper.engine.InferenceClient
 import com.forgerig.gatekeeper.engine.TimedGeneration
 import com.forgerig.gatekeeper.engine.TimedInferenceClient
+import com.forgerig.gatekeeper.engine.StreamingInferenceClient
 import com.forgerig.gatekeeper.prompts.PromptFraming
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -25,7 +26,7 @@ class OrtGenAiClient(
     private val modelDir: File,
     private val maxNewTokens: Int = 512,
     private val useXnnpack: Boolean = true
-) : InferenceClient, TimedInferenceClient, AutoCloseable {
+) : InferenceClient, TimedInferenceClient, StreamingInferenceClient, AutoCloseable {
 
     constructor(appContext: Context, modelDir: File) : this(
         appContext,
@@ -63,6 +64,9 @@ class OrtGenAiClient(
         // guard below fails fast against the same bound with a readable
         // error instead of a cryptic native rejection.
         const val CONTEXT_WINDOW_TOKENS = 4096
+        // Live-stream throttle: cumulative text is pushed at most this often
+        // so the UI thread renders progress instead of drowning in callbacks.
+        const val STREAM_EMIT_MS = 300L
 
         // Conservative oversize check on the assembled wire prompt: the
         // chars/4 estimate plus chat-template overhead margin must leave
@@ -197,6 +201,17 @@ class OrtGenAiClient(
     }
 
     override suspend fun generateTimed(systemPrompt: String, userContent: String): TimedGeneration =
+        generateStreaming(systemPrompt, userContent) { _ -> }
+
+    // Live token path: the JNI bridge already pushes per-token callbacks —
+    // forward the cumulative text (throttled so the UI thread isn't spammed)
+    // and reuse the exact same tail (guard, blank checks, stop-trim, metrics)
+    // as the non-streaming call so behavior can't diverge between the two.
+    override suspend fun generateStreaming(
+        systemPrompt: String,
+        userContent: String,
+        onToken: (String) -> Unit
+    ): TimedGeneration =
         withContext(Dispatchers.IO) {
             if (handle == 0L) warmup()
             // Fail fast on inputs that cannot fit the context window (with a
@@ -207,6 +222,7 @@ class OrtGenAiClient(
             rejectOversizePrompt(promptText.length, maxNewTokens)
             val start = android.os.SystemClock.elapsedRealtime()
             val out = StringBuilder()
+            var lastEmit = 0L
             try {
                 // --- CRITICAL QUALITY FOCUS CONSTRAINTS (native side) ---
                 // 1. Completely decouple the model from creative text paths (Zero out Temperature):
@@ -222,6 +238,11 @@ class OrtGenAiClient(
                 // ------------------------------------------
                 LlmBridge.nativeGenerate(handle, promptText, maxNewTokens) { token ->
                     out.append(token)
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (now - lastEmit >= STREAM_EMIT_MS) {
+                        lastEmit = now
+                        onToken(out.toString())
+                    }
                 }
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
@@ -236,8 +257,10 @@ class OrtGenAiClient(
             if (text.isBlank()) {
                 throw IllegalStateException("ORT GenAI returned an empty response")
             }
+            // Final flush so consumers always end on the trimmed text.
+            onToken(text)
             lastGenerateMs = android.os.SystemClock.elapsedRealtime() - start
-            lastPromptChars = systemPrompt.length + userContent.length
+            lastPromptChars = promptText.length
             lastCompletionChars = text.length
             val tps = if (lastGenerateMs > 0) (text.length / 4.0) / (lastGenerateMs / 1000.0) else 0.0
             Log.i(
