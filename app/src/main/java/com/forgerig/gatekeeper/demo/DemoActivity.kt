@@ -53,6 +53,10 @@ class DemoActivity : Activity() {
     private val sectionTimers = LinkedHashMap<String, TextView>()
     private val sectionStartMs = LinkedHashMap<String, Long>()
     private var activeTimerKey: String? = null
+    // The one expanded dropdown: only the active stage stays open while
+    // running (completed sections collapse as the next stage starts), and
+    // the final render collapses everything into a compact summary.
+    private var expandedKey: String? = null
     // Last overall (non-stage) status line; heartbeat ticks append the total
     // counter to it instead of flashing stage lines above the list.
     private var overallStatus = "Running on-device…"
@@ -372,6 +376,7 @@ class DemoActivity : Activity() {
             sectionTimers.clear()
             sectionStartMs.clear()
             activeTimerKey = null
+            expandedKey = null
             // Sections exist from tap time: each fills as its stage starts
             // (live decode), progresses (finished cards), and completes.
             // Bypass runs a single Answer turn, so shells would only linger
@@ -521,6 +526,10 @@ class DemoActivity : Activity() {
         sectionStartMs.clear()
         activeTimerKey = null
         items.forEachIndexed { index, item -> addGroupedStep(container, index, item, animate = false) }
+        // Final state is a compact summary: every dropdown closed, counts
+        // and pills visible, tap to inspect a stage.
+        expandedKey = null
+        sectionBodies.keys.forEach { setSectionExpanded(it, false) }
     }
 
     // Shells for every stage, created at tap time so the pipeline visibly
@@ -556,13 +565,22 @@ class DemoActivity : Activity() {
         return ensureSection(container, item, RunResultFormat.stepUi(item))
     }
 
-    // Engine turn labels ("compress#2", "audit#1", "answer") to the live
-    // section their tokens decode into. Unknown labels stream nowhere.
+    private fun setSectionExpanded(key: String, expanded: Boolean) {
+        sectionBodies[key]?.visibility = if (expanded) View.VISIBLE else View.GONE
+        sectionChevrons[key]?.text = if (expanded) "▼" else "›"
+    }
+
     // Marks a section active: starts its stopwatch on first sight, shows
-    // the timer badge, and moves the running pulse onto it. Idempotent —
-    // repeat calls for the same stage only refresh the pulse target.
+    // the timer badge, moves the running pulse onto it, and opens its
+    // dropdown while collapsing the rest. The key guard keeps a streaming
+    // stage from fighting manual expands — collapse only happens on an
+    // actual stage switch. Idempotent otherwise.
     private fun markSectionActive(key: String) {
         ensureLiveSection(key)
+        if (expandedKey != key) {
+            sectionBodies.keys.forEach { other -> setSectionExpanded(other, other == key) }
+            expandedKey = key
+        }
         if (!sectionStartMs.containsKey(key)) {
             sectionStartMs[key] = android.os.SystemClock.elapsedRealtime()
         }
@@ -610,6 +628,8 @@ class DemoActivity : Activity() {
             }
         }
 
+    // Engine turn labels ("compress#2", "audit#1", "answer") to the live
+    // section their tokens decode into. Unknown labels stream nowhere.
     private fun tokenSection(label: String): String? = when {
         label == "stageA" -> "Stage A"
         label.startsWith("compress#") -> "Compress"

@@ -20,6 +20,9 @@ object DeterministicScrubber {
         Pattern.compile("(?i)\\b(api[_\\-]?key|secret|bearer)\\b\\s*[:=]\\s*['\"]?([^\\s'\"]{8,})['\"]?")
     private val HIGH_ENTROPY_TOKEN: Pattern =
         Pattern.compile("\\b[A-Za-z0-9+/=_\\-]{24,}\\b")
+    // Hex-like build identifiers (e.g., "47a2cb3931") that appear inside
+    // file paths must not be redacted — they are needed to correlate logs.
+    private val BuildIdRegex = Regex("[0-9a-fA-F]{8,20}")
 
     fun scrub(input: String): ScrubResult {
         val events = mutableListOf<ScrubEvent>()
@@ -66,6 +69,12 @@ object DeterministicScrubber {
         while (m.find()) {
             val tok = m.group()
             if (tok.startsWith("[")) continue
+            // Build identifiers (e.g., "47a2cb3931") in file paths are not
+            // secrets and must not be redacted — they are needed to correlate
+            // logs back to the original build artifact. Require BOTH a path
+            // separator and a hex-like build ID so random high-entropy tokens
+            // are still scrubbed.
+            if (tok.contains("/") && BuildIdRegex.containsMatchIn(tok)) continue
             val entropy = shannonEntropy(tok)
             val looksSecret = tok.contains("=") || tok.contains("/") || tok.contains("+")
             if ((looksSecret && entropy >= 4.2) || entropy >= 4.6) {
@@ -78,6 +87,7 @@ object DeterministicScrubber {
         return if (changed) sb.toString() else input
     }
 
+    
     fun shannonEntropy(s: String): Double {
         if (s.isEmpty()) return 0.0
         val freq = IntArray(256)
