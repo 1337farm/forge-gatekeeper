@@ -332,7 +332,9 @@ class DemoActivity : Activity() {
             sectionPlaceholders.clear()
             // Sections exist from tap time: each fills as its stage starts
             // (live decode), progresses (finished cards), and completes.
-            precreateSections(stepsView)
+            // Bypass runs a single Answer turn, so shells would only linger
+            // as stale "Waiting…" rows — skip them there.
+            if (!bypassSwitch.isChecked) precreateSections(stepsView)
             lastSteps = emptyList()
             val provider = when (findViewById<Spinner>(R.id.providerSpinner).selectedItemPosition) {
                 1 -> InferenceService.PROVIDER_CPU
@@ -483,7 +485,7 @@ class DemoActivity : Activity() {
         listOf("Scrub", "Hardware", "Stage A", "Stage B", "Compress", "Audit", "Answer")
 
     private fun precreateSections(container: LinearLayout) {
-        pendingKeys().forEach { key ->
+        pendingSectionKeys.forEach { key ->
             val body = ensureLiveSection(key)
             if (!sectionPlaceholders.containsKey(key)) {
                 val placeholder = TextView(this).apply {
@@ -500,8 +502,6 @@ class DemoActivity : Activity() {
             }
         }
     }
-
-    private fun pendingKeys(): List<String> = pendingSectionKeys
 
     private fun ensureLiveSection(key: String): LinearLayout {
         sectionBodies[key]?.let { return it }
@@ -740,8 +740,10 @@ class DemoActivity : Activity() {
             return RunResultFormat.StepItem("done", label, body.substringAfter("✓").trim())
         }
         if (body.startsWith("Skip")) {
+            val rest = body.removePrefix("Skip").trim().trimStart(':').trim()
+            val detail = rest.substringAfter(':', rest).trim().ifBlank { rest }
             return RunResultFormat.StepItem(
-                "skip", "Skipped", body.removePrefix("Skip").trim().trimStart(':').trim()
+                "skip", RunResultFormat.skipSection(rest), detail
             )
         }
         if (body.startsWith("Done")) {

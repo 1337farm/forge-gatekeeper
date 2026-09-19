@@ -124,9 +124,14 @@ class InferenceService : Service() {
             while (isActive) {
                 delay(5000)
                 if (!isRunning) return@launch
+                val base = baseStatus
+                // A tick re-emitting a ✓ completion line would plant a
+                // duplicate timeline row (live rows key off ✓) — and ticks
+                // only matter during silent stretches anyway, so skip them.
+                if (base.contains("✓")) continue
                 val elapsed =
                     (android.os.SystemClock.elapsedRealtime() - runStartMs) / 1000
-                val line = "$baseStatus · ${elapsed}s elapsed"
+                val line = "$base · ${elapsed}s elapsed"
                 lastStatus = line
                 sendBroadcast(
                     Intent(ACTION_INFER_PROGRESS)

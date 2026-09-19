@@ -192,6 +192,14 @@ class RunResultFormatTest {
     }
 
     @Test
+    fun `skip lines map to their stage section`() {
+        assertEquals("Stage B", RunResultFormat.skipSection("Stage B: no ambient PII"))
+        assertEquals("Compress", RunResultFormat.skipSection("compress+audit: disabled by config"))
+        assertEquals("Audit", RunResultFormat.skipSection("Stage D · Accuracy audit: compression skipped"))
+        assertEquals("Skipped", RunResultFormat.skipSection("something unexpected"))
+    }
+
+    @Test
     fun `benchmark summary names faster leg with factor`() {
         val line = RunResultFormat.benchmarkSummary(cpuMs = 45200, xnnpackMs = 31800)
         assertTrue(line.contains("CPU 45.2s"))
