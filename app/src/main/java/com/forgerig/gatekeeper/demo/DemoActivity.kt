@@ -425,9 +425,9 @@ class DemoActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { marginEnd = dp(6)
+            ).apply { marginEnd = dp(6) }
         }.also { stylePill(it, text, tone) }
-            .also { if (desc.isNotBlank()) addTooltip(it, desc)
+            .also { if (desc.isNotBlank()) addTooltip(it, desc) }
     }
 
     private fun badgeTooltip(text: String): String = when (text) {
@@ -467,6 +467,18 @@ class DemoActivity : Activity() {
         "ANSWER" -> "Answer generation"
         "STEP" -> "Pipeline step"
         else -> ""
+    }
+
+    private fun addTooltip(view: TextView, text: String) {
+        if (text.isBlank()) return
+        view.contentDescription = text
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            view.tooltipText = text
+        }
+        view.setOnLongClickListener {
+            Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
+            true
+        }
     }
 
     private fun animatedColumn(): LinearLayout {
