@@ -40,6 +40,10 @@ class MediaPipeLlmClient(
 
     companion object {
         const val WARMUP_TIMEOUT_MS = 120_000L
+        // Synchronous decode bound: matches the engine's execution budget so
+        // a stuck native call surfaces as TimeoutCancellationException,
+        // which the pipeline turns into a sanitized fallback.
+        const val GENERATE_TIMEOUT_MS = 120_000L
         // Greedy decoding: temperature 0.0, top_k 1 — decouples the model from
         // creative text paths for single-character structural keys.
         const val DETERMINISTIC_TEMPERATURE = 0.0f
@@ -105,8 +109,12 @@ class MediaPipeLlmClient(
         withContext(Dispatchers.IO) {
             if (!llmRef.isInitialized()) warmup()
             val start = android.os.SystemClock.elapsedRealtime()
+            // Bound the synchronous decode like warmup: without this a stuck
+            // native call outlives the engine timeout path on this backend.
             val raw = try {
-                llm.generateResponse(PromptFraming.wrap(systemPrompt, userContent))
+                withTimeout(GENERATE_TIMEOUT_MS) {
+                    llm.generateResponse(PromptFraming.wrap(systemPrompt, userContent))
+                }
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
                 throw IllegalStateException("Local LLM failed: ${t.message}".take(600), t)
@@ -124,6 +132,10 @@ class MediaPipeLlmClient(
             TimedGeneration(text, lastGenerateMs, text.length / 4)
         }
 
+    // Kotlin-side backstop: cuts at `<|endoftext|>` always. The "\n" stop
+    // lives in the MediaPipe sampler options (DETERMINISTIC_STOP_SEQUENCES),
+    // not here — blanket newline truncation would shred multi-line verdict
+    // blocks and answers, so it must stay sampler-side.
     internal fun applyStopSequences(raw: String): String {
         var s = raw
         val eot = s.indexOf("<|endoftext|>")

@@ -28,6 +28,8 @@ class PromptLoaderTest {
         assertTrue(p.security.contains("I:[SAFE|MALICIOUS]"))
         assertTrue(p.compression.contains("continue work"))
         assertTrue(p.audit.contains("S:[MATCH|MISMATCH]"))
+        assertTrue(p.audit.contains("P:[semicolon-separated dropped items or NONE]"))
+        assertTrue(p.audit.contains("A:[semicolon-separated added meanings or NONE]"))
         assertTrue(p.audit.contains("F:[One-sentence corrective feedback or NONE]"))
     }
 

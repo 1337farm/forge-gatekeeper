@@ -40,6 +40,8 @@ class MicroOpDeterminismTest {
         val t = resource("stage_d_auditor.txt")
         assertTrue(t.contains("S:[MATCH|MISMATCH]"))
         assertTrue(t.contains("D:[0.0 to 1.0]"))
+        assertTrue(t.contains("P:[semicolon-separated dropped items or NONE]"))
+        assertTrue(t.contains("A:[semicolon-separated added meanings or NONE]"))
         assertTrue(t.contains("F:[One-sentence corrective feedback or NONE]"))
         assertTrue(t.contains("Stop generating text immediately after the F line value."))
     }
