@@ -274,4 +274,19 @@ class RunResultFormatTest {
     fun `benchmark summary flags incomplete legs`() {
         assertTrue(RunResultFormat.benchmarkSummary(0, 31800).contains("incomplete"))
     }
+
+    @Test
+    fun `qa codec round-trips pipes and newlines`() {
+        val q = "system:\nYou are X | the best"
+        val a = "A: 1 | 2\nB: done"
+        val turn = RunResultFormat.decodeQa(RunResultFormat.encodeQa(q, a))
+        assertEquals(q, turn?.question)
+        assertEquals(a, turn?.answer)
+    }
+
+    @Test
+    fun `qa codec rejects corrupt payloads`() {
+        assertEquals(null, RunResultFormat.decodeQa("no-pipes-at-all"))
+        assertEquals(null, RunResultFormat.decodeQa("!!!|!!!"))
+    }
 }

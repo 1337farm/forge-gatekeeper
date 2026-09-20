@@ -110,6 +110,8 @@ class InferenceService : Service() {
         lastTelemetry = ""
         lastDebug = ""
         lastSteps = ArrayList()
+        lastProgressLines = ArrayList()
+        lastQa = HashMap()
         runInference(prompt, bypass, forceAll, provider, microOp)
         return START_NOT_STICKY
     }
@@ -323,8 +325,10 @@ class InferenceService : Service() {
                 if (direction == "request") qaReq[label] = text else qaRes[label] = text
                 // Mirror each finished turn live so in-progress cards can
                 // show their expandable Q/A immediately instead of waiting
-                // for the DONE rebuild.
+                // for the DONE rebuild. Stash the same payload for reopen
+                // replay after a swipe-kill.
                 if (direction == "response") {
+                    lastQa[label] = RunResultFormat.encodeQa(qaReq[label].orEmpty(), text)
                     sendBroadcast(
                         Intent(ACTION_INFER_QA)
                             .setPackage(packageName)
@@ -355,6 +359,7 @@ class InferenceService : Service() {
             }.getOrElse { "Answer failed: ${it.message}" }
         } else null
         if (result is GatekeeperResult.Success && answer != null && !answer.startsWith("Answer failed:")) {
+            lastQa["answer"] = RunResultFormat.encodeQa(result.safeCompressedPrompt, answer)
             sendBroadcast(
                 Intent(ACTION_INFER_QA)
                     .setPackage(packageName)
@@ -422,6 +427,7 @@ class InferenceService : Service() {
     private fun publish(line: String, nm: NotificationManager, id: Int) {
         lastStatus = line
         baseStatus = line
+        lastProgressLines = ArrayList((lastProgressLines + line).takeLast(100))
         sendBroadcast(
             Intent(ACTION_INFER_PROGRESS)
                 .setPackage(packageName)
@@ -591,6 +597,16 @@ class InferenceService : Service() {
             private set
         @Volatile
         var lastSteps: ArrayList<String> = ArrayList()
+            private set
+        // Mid-run replay snapshot: every published progress line (capped)
+        // plus finished Q/A turns by engine label. A swipe-killed Activity
+        // reopens into these and rebuilds the exact live timeline instead
+        // of an empty run. Reset on every new run, like the rest.
+        @Volatile
+        var lastProgressLines: ArrayList<String> = ArrayList()
+            private set
+        @Volatile
+        var lastQa: HashMap<String, String> = HashMap()
             private set
 
         fun startRun(context: Context, prompt: String, bypass: Boolean, forceAll: Boolean, provider: String, microOp: Boolean) {

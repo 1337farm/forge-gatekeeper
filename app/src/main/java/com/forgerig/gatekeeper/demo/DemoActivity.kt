@@ -196,41 +196,7 @@ class DemoActivity : Activity() {
                     InferenceService.ACTION_INFER_PROGRESS -> {
                         val line = intent.getStringExtra(InferenceService.EXTRA_LINE)
                             ?: return
-                        val item = liveStepItem(line)
-                        if (item != null) {
-                            // Completed stage lines grow the timeline live (with
-                            // the container's layout animation); the finished
-                            // card freezes its section clock. The authoritative
-                            // numbered render on DONE replaces these.
-                            // Attach the stage's finished Q/A turn when known
-                            // so the card's expand button exists live.
-                            val filled = liveQa[item.label]?.takeIf {
-                                item.question.isBlank() && item.answer.isBlank() &&
-                                    (it.question.isNotBlank() || it.answer.isNotBlank())
-                            }?.let { item.copy(question = it.question, answer = it.answer) }
-                                ?: item
-                            lastSteps = lastSteps + filled
-                            addGroupedStep(stepsView, lastSteps.size - 1, filled, animate = true)
-                        } else {
-                            // In-progress stage lines live inside their own
-                            // section — the status line above stays overall —
-                            // while overall lines still move the status.
-                            RunResultFormat.progressSection(line)?.let { key ->
-                                val body = ensureLiveSection(key)
-                                sectionPlaceholders.remove(key)?.let { body.removeView(it) }
-                                markSectionActive(key)
-                                // Never clobber an active decode stream with a
-                                // short status line: the finished card replaces
-                                // the live row on completion.
-                                if (!sectionLiveViews.containsKey(key) || (sectionStreamLen[key] ?: 0) == 0) {
-                                    liveRow(key, body).text = line.substringAfter("] ", line).trim()
-                                }
-                                sectionCounts[key]?.text = "${body.childCount}"
-                            } ?: run {
-                                overallStatus = line
-                                statusView.text = line
-                            }
-                        }
+                        handleProgressLine(line, animate = true)
                         return
                     }
                     InferenceService.ACTION_INFER_DEBUG -> {
@@ -656,6 +622,47 @@ class DemoActivity : Activity() {
         addTooltip(badge, desc)
     }
 
+    // Single entry for live progress lines, shared by the broadcast
+    // receiver and reopen replay after a swipe-kill: completed stage lines
+    // grow the timeline (with Q/A attached when known so the expand button
+    // exists), in-progress lines fill their own section, and overall lines
+    // move the status. Replays pass animate=false to skip the entry cascade.
+    private fun handleProgressLine(line: String, animate: Boolean, fullExpand: Boolean = animate) {
+        val stepsView = findViewById<LinearLayout>(R.id.stepsView)
+        val statusView = findViewById<TextView>(R.id.statusView)
+        val item = liveStepItem(line)
+        if (item != null) {
+            // The authoritative numbered render on DONE replaces these.
+            // Attach the stage's finished Q/A turn when known so the card's
+            // expand button exists live.
+            val filled = liveQa[item.label]?.takeIf {
+                item.question.isBlank() && item.answer.isBlank() &&
+                    (it.question.isNotBlank() || it.answer.isNotBlank())
+            }?.let { item.copy(question = it.question, answer = it.answer) }
+                ?: item
+            lastSteps = lastSteps + filled
+            addGroupedStep(stepsView, lastSteps.size - 1, filled, animate = animate, fullExpand = fullExpand)
+        } else {
+            // In-progress stage lines live inside their own section — the
+            // status line above stays overall — while overall lines still
+            // move the status.
+            RunResultFormat.progressSection(line)?.let { key ->
+                val body = ensureLiveSection(key)
+                sectionPlaceholders.remove(key)?.let { body.removeView(it) }
+                markSectionActive(key)
+                // Never clobber an active decode stream with a short status
+                // line: the finished card replaces the live row on completion.
+                if (!sectionLiveViews.containsKey(key) || (sectionStreamLen[key] ?: 0) == 0) {
+                    liveRow(key, body).text = line.substringAfter("] ", line).trim()
+                }
+                sectionCounts[key]?.text = "${body.childCount}"
+            } ?: run {
+                overallStatus = line
+                statusView.text = line
+            }
+        }
+    }
+
     private fun renderDebugChips(container: LinearLayout, debug: String) {
         // Full rebuilds on every debug line flicker: skip when the source
         // text has not changed since the last render.
@@ -948,7 +955,7 @@ class DemoActivity : Activity() {
         return body
     }
 
-    private fun addGroupedStep(container: LinearLayout, index: Int, item: RunResultFormat.StepItem, animate: Boolean) {
+    private fun addGroupedStep(container: LinearLayout, index: Int, item: RunResultFormat.StepItem, animate: Boolean, fullExpand: Boolean = animate) {
         val ui = RunResultFormat.stepUi(item)
         val body = ensureSection(container, item, ui)
         // A finished card supersedes the live decode row and the waiting
@@ -959,12 +966,15 @@ class DemoActivity : Activity() {
         sectionStreamLen.remove(item.label)
         freezeSectionTimer(item.label)
         // Live completions land fully expanded (section + inner Q/A);
-        // post-run review renders collapsed for a compact summary.
-        val card = stepCard(index, item, ui, startExpanded = animate)
+        // post-run review renders collapsed for a compact summary. Replays
+        // expand without the entry animation.
+        val card = stepCard(index, item, ui, startExpanded = fullExpand)
         body.addView(card)
-        if (animate) {
+        if (fullExpand) {
             completedLiveKeys.add(item.label)
             setSectionExpanded(item.label, true)
+        }
+        if (animate) {
             card.alpha = 0f
             card.translationY = dp(8).toFloat()
             card.animate().alpha(1f).translationY(0f).setDuration(250).start()
@@ -1162,6 +1172,22 @@ class DemoActivity : Activity() {
             currentPrompt = InferenceService.lastPrompt.ifBlank { currentPrompt }
             findViewById<TextView>(R.id.answerPromptView).text = currentPrompt
             updateStatusBadge(findViewById(R.id.statusBadge), null, InferenceService.lastStatus)
+            // Rebuild the exact live timeline after a swipe-kill: finished
+            // Q/A turns first (cards attach them at creation), then replay
+            // every published progress line without entry animations.
+            // Live broadcasts resume on top from the re-registered receiver.
+            for ((label, encoded) in InferenceService.lastQa) {
+                val turn = runCatching { RunResultFormat.decodeQa(encoded) }.getOrNull()
+                    ?: continue
+                tokenSection(label)?.let { key ->
+                    if (turn.question.isNotBlank() || turn.answer.isNotBlank()) {
+                        liveQa[key] = turn
+                    }
+                }
+            }
+            for (line in InferenceService.lastProgressLines) {
+                handleProgressLine(line, animate = false, fullExpand = true)
+            }
             startRunPulse(findViewById(R.id.statusView))
         } else if (InferenceService.lastStatus != "Idle.") {
             findViewById<TextView>(R.id.statusView).text = InferenceService.lastStatus
