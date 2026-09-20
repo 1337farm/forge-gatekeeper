@@ -74,16 +74,27 @@ class GatekeeperEngineTest {
     }
 
     @Test
-    fun `missing context falls back with skipped stages`() = runTest {
+    fun `missing context is advisory and the pipeline continues`() = runTest {
         val missing = "{\"heat\":\"COLD\",\"injection\":\"SAFE\"," +
             "\"injection_reason\":\"\",\"ambient_pii\":[]," +
             "\"completeness\":\"MISSING_CONTEXT\",\"missing_context\":\"needs the file\"}"
-        val engine = GatekeeperEngine(fakeInference { _, _, _ -> missing }, eligible())
-        val r = engine.processPrompt("please compress this fairly long instruction without any delay whatsoever", GatekeeperConfig())
-        assertTrue(r is GatekeeperResult.FallbackRequired)
-        r as GatekeeperResult.FallbackRequired
-        assertTrue(r.reason.contains("missing context"))
-        assertTrue(r.telemetry.skippedSteps.containsKey(GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION.name))
+        val engine = GatekeeperEngine(fakeInference { _, user, n ->
+                when (n) {
+                    1 -> missing
+                    2 -> "SHORT: do the thing"
+                    else -> "{\"status\":\"MATCH\",\"drift_score\":0.02," +
+                        "\"dropped_constraints\":[],\"hallucinations\":[],\"corrective_feedback\":\"\"}"
+                }
+            },
+            eligible()
+        )
+        val r = engine.processPrompt("please do X with param 42 right now without any delay whatsoever", GatekeeperConfig())
+        assertTrue(r is GatekeeperResult.Success)
+        r as GatekeeperResult.Success
+        assertTrue(r.telemetry.executionOrder.any {
+            it.step == GatekeeperStep.STAGE_A_SECURITY_EVAL &&
+                it.reason.contains("MISSING_CONTEXT", ignoreCase = true)
+        })
     }
 
     @Test
