@@ -234,4 +234,44 @@ class RunResultFormatTest {
         assertTrue(lines.any { it.startsWith("CPU avg") })
         assertTrue(lines.none { it.contains("inputCPU") || it.contains("input CPU avg") })
     }
+
+    @Test
+    fun `step kinds cover retried blocked and fallback label`() {
+        assertEquals("done", RunResultFormat.stepKind(StepStatus.RETRIED))
+        assertEquals("fail", RunResultFormat.stepKind(StepStatus.BLOCKED))
+        assertEquals("Fallback", RunResultFormat.stepLabel(GatekeeperStep.FALLBACK_TO_SANITIZED))
+    }
+
+    @Test
+    fun `corrupt rows become placeholders instead of vanishing`() {
+        val decoded = RunResultFormat.decodeSteps(listOf("no-pipes-at-all", "a|b|c|!!!|!!!"))
+        assertEquals(2, decoded.size)
+        assertTrue(decoded.all { it.detail == "undecodable timeline row" })
+    }
+
+    @Test
+    fun `debug chips empty without provider lines`() {
+        assertTrue(RunResultFormat.debugChips("nothing relevant here").isEmpty())
+    }
+
+    @Test
+    fun `debug chips keep both benchmark legs`() {
+        val debug = "[cpu:provider] requested=CPU actual=CPU warmMs=1000 reused=false\n" +
+            "[xnnpack:provider] requested=XNNPACK actual=XNNPACK warmMs=2000 reused=true"
+        val texts = RunResultFormat.debugChips(debug).map { it.text }
+        assertTrue(texts.contains("EP CPU [cpu]"))
+        assertTrue(texts.contains("EP XNNPACK [xnnpack]"))
+    }
+
+    @Test
+    fun `split request handles empty input`() {
+        val r = RunResultFormat.splitRequest("   ")
+        assertEquals("", r.system)
+        assertEquals("", r.user)
+    }
+
+    @Test
+    fun `benchmark summary flags incomplete legs`() {
+        assertTrue(RunResultFormat.benchmarkSummary(0, 31800).contains("incomplete"))
+    }
 }

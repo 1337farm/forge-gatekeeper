@@ -63,6 +63,48 @@ class GatekeeperEngineTest {
     }
 
     @Test
+    fun `unparseable injection verdict falls back instead of running safe`() = runTest {
+        val engine = GatekeeperEngine(fakeInference { _, _, _ -> stageAJson(injection = "MAYBE") },
+            eligible()
+        )
+        val r = engine.processPrompt("please compress this fairly long instruction without any delay whatsoever", GatekeeperConfig())
+        assertTrue(r is GatekeeperResult.FallbackRequired)
+        r as GatekeeperResult.FallbackRequired
+        assertTrue(r.reason.contains("unparseable injection verdict"))
+    }
+
+    @Test
+    fun `missing context falls back with skipped stages`() = runTest {
+        val missing = "{\"heat\":\"COLD\",\"injection\":\"SAFE\"," +
+            "\"injection_reason\":\"\",\"ambient_pii\":[]," +
+            "\"completeness\":\"MISSING_CONTEXT\",\"missing_context\":\"needs the file\"}"
+        val engine = GatekeeperEngine(fakeInference { _, _, _ -> missing }, eligible())
+        val r = engine.processPrompt("please compress this fairly long instruction without any delay whatsoever", GatekeeperConfig())
+        assertTrue(r is GatekeeperResult.FallbackRequired)
+        r as GatekeeperResult.FallbackRequired
+        assertTrue(r.reason.contains("missing context"))
+        assertTrue(r.telemetry.skippedSteps.containsKey(GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION.name))
+    }
+
+    @Test
+    fun `compressor generic error falls back with ledger`() = runTest {
+        val engine = GatekeeperEngine(object : InferenceClient {
+            override suspend fun generate(systemPrompt: String, userContent: String): String {
+                if (systemPrompt.contains("compressor", ignoreCase = true)) throw RuntimeException("model gone")
+                if (systemPrompt.contains("auditor", ignoreCase = true)) error("must not audit")
+                return stageAJson()
+            }
+        }, eligible())
+        val r = engine.processPrompt(
+            "please compress this fairly long instruction without any delay whatsoever",
+            GatekeeperConfig()
+        )
+        assertTrue(r is GatekeeperResult.FallbackRequired)
+        r as GatekeeperResult.FallbackRequired
+        assertTrue(r.reason.contains("compression error"))
+    }
+
+    @Test
     fun `success path compresses and audits match with telemetry`() = runTest {
         val engine = GatekeeperEngine(fakeInference { _, user, n ->
                 when (n) {
@@ -344,6 +386,39 @@ class GatekeeperEngineTest {
         r as AccuracyAuditResult.Mismatch
         assertEquals(listOf("ram"), r.droppedConstraints)
         assertTrue(r.correctiveFeedback.isNotBlank())
+    }
+
+    @Test
+    fun `micro-op audit match with drops becomes mismatch`() {
+        val engine = GatekeeperEngine(fakeInference { _, _, _ -> "" }, eligible())
+        val raw = "S: MATCH\nD: 0.2\nP: ram\nA: NONE\nF: restore ram"
+        val r = engine.parseAudit(raw)
+        assertTrue(r is AccuracyAuditResult.Mismatch)
+        r as AccuracyAuditResult.Mismatch
+        assertEquals(listOf("ram"), r.droppedConstraints)
+        assertTrue(r.correctiveFeedback.contains("restore ram"))
+    }
+
+    @Test
+    fun `micro-op audit clean match parses`() {
+        val engine = GatekeeperEngine(fakeInference { _, _, _ -> "" }, eligible())
+        val raw = "S: MATCH\nD: 0.1\nP: NONE\nA: NONE\nF: NONE"
+        val r = engine.parseAudit(raw)
+        assertTrue(r is AccuracyAuditResult.Match)
+    }
+
+    @Test
+    fun `breakerFor shares state across calls`() {
+        val a = GatekeeperEngine.breakerFor(997, 60_000L)
+        val b = GatekeeperEngine.breakerFor(997, 60_000L)
+        assertTrue(a === b)
+    }
+
+    @Test
+    fun `maskAmbientPii is case-insensitive and spares substrings`() {
+        val engine = GatekeeperEngine(fakeInference { _, _, _ -> "" }, eligible())
+        assertEquals("[PII_REDACTED] went home", engine.maskAmbientPii("Alice went home", listOf("alice")))
+        assertEquals("Malice aforethought", engine.maskAmbientPii("Malice aforethought", listOf("alice")))
     }
 
     @Test

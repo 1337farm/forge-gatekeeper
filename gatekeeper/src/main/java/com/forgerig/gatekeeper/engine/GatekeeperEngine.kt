@@ -56,6 +56,16 @@ class GatekeeperEngine(
             "hi", "hey", "hello", "yo", "thanks", "thank", "please",
             "ok", "okay", "yes", "no", "bye", "thanks!"
         )
+
+        // Breaker state must survive across calls to mean anything: a fresh
+        // breaker per processPrompt can never trip. Cache one per threshold
+        // window so consecutive runs share failure history.
+        private val sharedBreakers = java.util.concurrent.ConcurrentHashMap<String, CircuitBreaker>()
+
+        internal fun breakerFor(failureThreshold: Int, cooldownMs: Long): CircuitBreaker =
+            sharedBreakers.getOrPut("$failureThreshold/$cooldownMs") {
+                CircuitBreaker(failureThreshold, cooldownMs)
+            }
     }
 
     suspend fun processPrompt(
@@ -84,7 +94,7 @@ class GatekeeperEngine(
         fun rec(step: GatekeeperStep, status: StepStatus, reason: String = "", it: Int = 0, d: Long = 0) {
             records.add(StepExecutionRecord(order++, step, status, reason, it, d))
         }
-        val breaker = CircuitBreaker(config.circuitFailureThreshold, config.circuitCooldownMs)
+        val breaker = breakerFor(config.circuitFailureThreshold, config.circuitCooldownMs)
         // Stage wording comes from the configured prompt set (LABELED vs
         // MICRO_OP A/B) so the comparison changes what the model is asked —
         // never what the engine accepts (both parse through delineatedBlocks).
@@ -187,8 +197,20 @@ class GatekeeperEngine(
             )
         }
         breaker.recordSuccess()
-        val heat = runCatching { HeatLevel.valueOf(stageA.heat.uppercase()) }.getOrDefault(HeatLevel.COLD)
-        val injection = runCatching { InjectionVerdict.valueOf(stageA.injection.uppercase()) }.getOrDefault(InjectionVerdict.SAFE)
+        // Fail closed on unparseable judge output: unknown heat degrades to
+        // WARM (never COLD), and an unknown injection verdict cannot be
+        // trusted — fall back to sanitized instead of running as SAFE.
+        val heat = runCatching { HeatLevel.valueOf(stageA.heat.uppercase()) }.getOrDefault(HeatLevel.WARM)
+        val injection = runCatching { InjectionVerdict.valueOf(stageA.injection.uppercase()) }.getOrNull()
+        if (injection == null) {
+            val cause = "stage_a error: unparseable injection verdict '${stageA.injection}'".take(500)
+            rec(GatekeeperStep.STAGE_A_SECURITY_EVAL, StepStatus.FAILED, cause)
+            rec(GatekeeperStep.FALLBACK_TO_SANITIZED, StepStatus.EXECUTED, cause)
+            return GatekeeperResult.FallbackRequired(
+                sanitized, cause,
+                ledger(preTokens, fallback = cause)
+            )
+        }
         rec(
             GatekeeperStep.STAGE_A_SECURITY_EVAL, StepStatus.EXECUTED,
             "heat=$heat injection=$injection completeness=${stageA.completeness}", 0, System.currentTimeMillis() - s3
@@ -206,6 +228,24 @@ class GatekeeperEngine(
             val reason = "MALICIOUS blocked: ${stageA.injection_reason}".take(500)
             Log.w(tag, reason)
             return GatekeeperResult.Blocked(reason, heat, ledger(preTokens, injected = true, fallback = reason))
+        }
+        // Completeness is parsed but must also be acted on: MISSING_CONTEXT
+        // means the judge cannot evaluate, so fall back to sanitized rather
+        // than compressing blind.
+        if (stageA.completeness.equals("MISSING_CONTEXT", ignoreCase = true)) {
+            for (s in listOf(
+                GatekeeperStep.STAGE_B_PII_REDACTION, GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION,
+                GatekeeperStep.STAGE_D_ACCURACY_AUDIT
+            )) {
+                rec(s, StepStatus.SKIPPED, "missing context")
+                skipped[s.name] = "missing context"
+            }
+            val reason = "missing context: ${stageA.missing_context}".take(500)
+            rec(GatekeeperStep.FALLBACK_TO_SANITIZED, StepStatus.EXECUTED, reason)
+            return GatekeeperResult.FallbackRequired(
+                sanitized, reason,
+                ledger(preTokens, fallback = reason)
+            )
         }
         // The on-device judge over-reports: observed ambient_pii:["hi"] for
         // the input "hi", which Stage B then masked into oblivion. Validate
@@ -404,6 +444,17 @@ class GatekeeperEngine(
                 )
             } catch (e: CancellationException) {
                 throw e
+            } catch (t: Throwable) {
+                // Any other inference failure (model missing, service error)
+                // falls back to sanitized with a ledger entry — never escapes.
+                breaker.recordFailure()
+                val cause = "compression error: ${t.message}".take(500)
+                rec(GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION, StepStatus.FAILED, cause, compIt, System.currentTimeMillis() - sc)
+                rec(GatekeeperStep.FALLBACK_TO_SANITIZED, StepStatus.EXECUTED, cause)
+                return GatekeeperResult.FallbackRequired(
+                    sanitized, cause,
+                    ledger(preTokens, fallback = cause, compIt = compIt, audIt = audIt)
+                )
             }
 
             if (!config.enableAudit) {
@@ -501,10 +552,14 @@ class GatekeeperEngine(
         onLlmEvent: (label: String, direction: String, text: String) -> Unit = { _, _, _ -> },
         onToken: (label: String, cumulative: String) -> Unit = { _, _ -> }
     ): String {
+        // Track lock ownership locally: isLocked can report another
+        // coroutine's hold, so only the holder may unlock.
+        var lockHeld = false
         try {
             withTimeout(config.queueWaitTimeoutMs) {
                 npuMutex.lock()
             }
+            lockHeld = true
         } catch (e: TimeoutCancellationException) {
             breaker.recordFailure()
             throw e
@@ -526,7 +581,10 @@ class GatekeeperEngine(
         } catch (e: CancellationException) {
             throw e
         } finally {
-            if (npuMutex.isLocked) npuMutex.unlock()
+            if (lockHeld) {
+                runCatching { npuMutex.unlock() }
+                lockHeld = false
+            }
         }
     }
 
@@ -608,16 +666,17 @@ class GatekeeperEngine(
         if (votes.size == 1) return votes[0]
         val matches = votes.filterIsInstance<AccuracyAuditResult.Match>()
         val mismatches = votes.filterIsInstance<AccuracyAuditResult.Mismatch>()
+        // Average across ALL votes so dissenting high-drift votes cannot be
+        // hidden by a match majority; ties still fail safe to MISMATCH.
+        fun driftOf(v: AccuracyAuditResult): Double = when (v) {
+            is AccuracyAuditResult.Match -> v.driftScore
+            is AccuracyAuditResult.Mismatch -> v.driftScore
+        }
         if (matches.size > mismatches.size) {
-            return AccuracyAuditResult.Match(matches.map { it.driftScore }.average())
+            return AccuracyAuditResult.Match(votes.map(::driftOf).average())
         }
         return AccuracyAuditResult.Mismatch(
-            driftScore = votes.map {
-                when (it) {
-                    is AccuracyAuditResult.Match -> it.driftScore
-                    is AccuracyAuditResult.Mismatch -> it.driftScore
-                }
-            }.average(),
+            driftScore = votes.map(::driftOf).average(),
             droppedConstraints = mismatches.flatMap { it.droppedConstraints }.distinct(),
             hallucinations = mismatches.flatMap { it.hallucinations }.distinct(),
             correctiveFeedback = mismatches.firstOrNull()?.correctiveFeedback.orEmpty()
@@ -638,8 +697,10 @@ class GatekeeperEngine(
         "HEAT", "INJECTION", "REASON", "AMBIENT_PII", "COMPLETENESS", "MISSING",
         // Zero-knowledge micro-op single-character boundaries:
         // Stage A: H: (heat), I: (injection), R: (reason).
-        // Stage D: S: (status), D: (drift), F: (feedback).
-        "H", "I", "R", "S", "D", "F"
+        // Stage D: S: (status), D: (drift), P: (dropped), A: (added
+        // meanings), F: (feedback). A: is used instead of H: because H:
+        // opens a new delineated block.
+        "H", "I", "R", "S", "D", "F", "P", "A"
     )
 
     internal fun delineatedBlocks(raw: String): List<Map<String, String>> {
@@ -681,8 +742,9 @@ class GatekeeperEngine(
     }
 
     private fun parseDelineatedAudit(block: Map<String, String>): AccuracyAuditResult? {
-        // Strict single-letter boundaries (S:/D:/F:) take precedence; legacy
-        // STATUS:/DRIFT:/FEEDBACK: remain supported for backward compatibility.
+        // Strict single-letter boundaries (S:/D:/P:/A:/F:) take precedence;
+        // legacy STATUS:/DRIFT:/DROPPED:/HALLUCINATIONS:/FEEDBACK: remain
+        // supported for backward compatibility.
         val rawStatus = block["S"] ?: block["STATUS"] ?: return null
         val status = rawStatus.trim().trim('[', ']').trim()
         // Strict validity: only MATCH/MISMATCH are verdicts; anything else is
@@ -692,10 +754,10 @@ class GatekeeperEngine(
         ) return null
         val rawDrift = block["D"] ?: block["DRIFT"]
         val drift = rawDrift?.trim()?.let { v ->
-            // Accept "0.85" and bracketed "[0.85]"; placeholder ranges fail to
-            // parse and fall back to 0.0 without throwing.
+            // Accept "0.85" and bracketed "[0.85]"; missing or placeholder
+            // ranges fail conservative to 1.0 instead of understating loss.
             v.trim('[', ']').trim().toDoubleOrNull()
-        } ?: 0.0
+        } ?: 1.0
         val feedback = block["F"] ?: block["FEEDBACK"] ?: ""
         // A MATCH that still lists dropped items or hallucinations is not a
         // match: coerce to MISMATCH so the retry loop feeds FEEDBACK back to
@@ -703,8 +765,8 @@ class GatekeeperEngine(
         return verdictOrMismatch(
             status,
             drift,
-            delineatedList(block["DROPPED"]),
-            delineatedList(block["HALLUCINATIONS"]),
+            delineatedList(block["P"] ?: block["DROPPED"]),
+            delineatedList(block["A"] ?: block["HALLUCINATIONS"]),
             feedback.trim()
         )
     }
@@ -784,7 +846,7 @@ class GatekeeperEngine(
             .find(json)?.groupValues?.get(1) ?: return null
         fun number(key: String): Double =
             Regex(""""$key"\s*:\s*([0-9]+(?:\.[0-9]+)?)""").find(json)
-                ?.groupValues?.get(1)?.toDoubleOrNull() ?: 0.0
+                ?.groupValues?.get(1)?.toDoubleOrNull() ?: 1.0
         fun arrayOf(key: String): List<String> {
             val body = Regex(
                 """"$key"\s*:\s*\[(.*?)\]"""",
@@ -855,8 +917,13 @@ class GatekeeperEngine(
     internal fun maskAmbientPii(text: String, tokens: List<String>): String {
         var out = text
         for (t in tokens) {
-            if (t.isBlank() || t.length < 2) continue
-            out = out.replace(t, "[PII_REDACTED]")
+            val item = t.trim()
+            if (item.isBlank() || item.length < 2) continue
+            // Case-insensitive whole-phrase match: the old case-sensitive
+            // substring replace missed case variants and corrupted words
+            // containing the token as a slice.
+            out = Regex("\\b${Regex.escape(item)}\\b", RegexOption.IGNORE_CASE)
+                .replace(out, "[PII_REDACTED]")
         }
         return out
     }

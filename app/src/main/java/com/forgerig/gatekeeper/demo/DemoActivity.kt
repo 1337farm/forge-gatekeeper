@@ -63,9 +63,17 @@ class DemoActivity : Activity() {
     // Last cumulative stream length per stage: guards the shared live row
     // against stale/duplicate broadcasts and progress-line clobbering.
     private val sectionStreamLen = LinkedHashMap<String, Int>()
+    // Finished LLM turns keyed by section ("Stage A", "Compress", "Audit",
+    // "Answer"): attached to live cards as they complete so the expand
+    // button exists during the run, not only after the DONE rebuild.
+    private val liveQa = LinkedHashMap<String, RunResultFormat.QaTurn>()
     // Last overall (non-stage) status line; heartbeat ticks append the total
     // counter to it instead of flashing stage lines above the list.
     private var overallStatus = "Running on-device…"
+    // Last debug text already rendered into chips (flicker guard) and the
+    // auto-download once-guard across rotation.
+    private var lastDebugChips: String? = null
+    private var autoDownloadStarted = false
     private var pulseAnimator: ObjectAnimator? = null
     private var pulsedView: View? = null
     private val sectionBodies = LinkedHashMap<String, LinearLayout>()
@@ -194,8 +202,15 @@ class DemoActivity : Activity() {
                             // the container's layout animation); the finished
                             // card freezes its section clock. The authoritative
                             // numbered render on DONE replaces these.
-                            lastSteps = lastSteps + item
-                            addGroupedStep(stepsView, lastSteps.size - 1, item, animate = true)
+                            // Attach the stage's finished Q/A turn when known
+                            // so the card's expand button exists live.
+                            val filled = liveQa[item.label]?.takeIf {
+                                item.question.isBlank() && item.answer.isBlank() &&
+                                    (it.question.isNotBlank() || it.answer.isNotBlank())
+                            }?.let { item.copy(question = it.question, answer = it.answer) }
+                                ?: item
+                            lastSteps = lastSteps + filled
+                            addGroupedStep(stepsView, lastSteps.size - 1, filled, animate = true)
                         } else {
                             // In-progress stage lines live inside their own
                             // section — the status line above stays overall —
@@ -270,6 +285,19 @@ class DemoActivity : Activity() {
                         }
                         return
                     }
+                    InferenceService.ACTION_INFER_QA -> {
+                        val label = intent.getStringExtra(InferenceService.EXTRA_QA_LABEL).orEmpty()
+                        val question = intent.getStringExtra(InferenceService.EXTRA_QA_QUESTION).orEmpty()
+                        val answer = intent.getStringExtra(InferenceService.EXTRA_QA_ANSWER).orEmpty()
+                        // Engine turn labels ("compress#2", "audit#1") share
+                        // the section mapping with token streams.
+                        tokenSection(label)?.let { key ->
+                            if (question.isNotBlank() || answer.isNotBlank()) {
+                                liveQa[key] = RunResultFormat.QaTurn(question, answer)
+                            }
+                        }
+                        return
+                    }
                     InferenceService.ACTION_INFER_HEARTBEAT -> {
                         val base = intent.getStringExtra(InferenceService.EXTRA_HEARTBEAT_BASE).orEmpty()
                         val elapsed = intent.getLongExtra(InferenceService.EXTRA_HEARTBEAT_ELAPSED_S, -1)
@@ -326,9 +354,13 @@ class DemoActivity : Activity() {
                 val ok = intent.getBooleanExtra(DownloadService.EXTRA_OK, false)
                 val message = intent.getStringExtra(DownloadService.EXTRA_MESSAGE).orEmpty()
                 if (kind == DownloadService.KIND_MODEL) {
-                    downloadButton.isEnabled = true
-                    downloadProgress.visibility = View.GONE
-                    downloadProgress.isIndeterminate = false
+                    // A second download leg may still be in flight: only
+                    // restore the button when nothing is still downloading.
+                    if (!DownloadService.hasActiveDownload) {
+                        downloadButton.isEnabled = true
+                        downloadProgress.visibility = View.GONE
+                        downloadProgress.isIndeterminate = false
+                    }
                     refreshModelStatus(modelStatus)
                     modelStatus.text = if (ok) "Model ready: $message" else "Download failed: $message"
                     if (ok) {
@@ -417,15 +449,20 @@ class DemoActivity : Activity() {
             expandedKey = null
             completedLiveKeys.clear()
             sectionStreamLen.clear()
+            liveQa.clear()
+            lastDebugChips = null
             // Sections exist from tap time: each fills as its stage starts
             // (live decode), progresses (finished cards), and completes.
             // Bypass runs a single Answer turn, so shells would only linger
             // as stale "Waiting…" rows — skip them there.
             if (!bypassSwitch.isChecked) precreateSections(stepsView)
             lastSteps = emptyList()
-            val provider = when (findViewById<Spinner>(R.id.providerSpinner).selectedItemPosition) {
-                1 -> InferenceService.PROVIDER_CPU
-                2 -> InferenceService.PROVIDER_BOTH
+            // Match by label text, not spinner position: reordering the
+            // provider options must not silently change the backend.
+            val selected = findViewById<Spinner>(R.id.providerSpinner).selectedItem?.toString().orEmpty()
+            val provider = when {
+                selected.contains("CPU only", ignoreCase = true) -> InferenceService.PROVIDER_CPU
+                selected.contains("benchmark", ignoreCase = true) -> InferenceService.PROVIDER_BOTH
                 else -> InferenceService.PROVIDER_XNNPACK
             }
             InferenceService.startRun(this, raw, bypassSwitch.isChecked, forceAllSwitch.isChecked, provider, promptSetSwitch.isChecked)
@@ -505,7 +542,26 @@ class DemoActivity : Activity() {
         "FALLBACK" -> "Fallback to sanitized prompt"
         "ANSWER" -> "Answer generation"
         "STEP" -> "Pipeline step"
-        else -> ""
+        "RUNNING" -> "Processing is in progress"
+        "SUCCESS" -> "Successfully completed"
+        "CANCELLED" -> "Cancelled by user"
+        "BLOCKED" -> "Input was blocked by gatekeeper"
+        "ERROR" -> "An error occurred during processing"
+        "RAW" -> "Raw LLM output (pipeline bypassed)"
+        "BENCHMARK" -> "Benchmark comparison mode"
+        else -> when {
+            text.startsWith("EP ") -> "Execution provider that actually bound the model"
+            text.startsWith("WARM ") -> "Backend warmup time for this run"
+            text.startsWith("TOTAL ") -> "Total run time for this execution"
+            text.startsWith("DRIFT") -> "Answer drift score from the accuracy audit"
+            text.startsWith("PII ") -> "PII redaction count for this stage"
+            text.startsWith("ITER ") -> "Compression iteration count"
+            text.contains("→") -> "Token counts before and after compression"
+            text.startsWith("FORCE") -> "All stages forced to run (overrides skips)"
+            text == "SAFE" || text.startsWith("SAFE") -> "Input passed safety check"
+            text.contains("READY") -> "Stage ready"
+            else -> ""
+        }
     }
 
     private fun addTooltip(view: TextView, text: String) {
@@ -601,6 +657,10 @@ class DemoActivity : Activity() {
     }
 
     private fun renderDebugChips(container: LinearLayout, debug: String) {
+        // Full rebuilds on every debug line flicker: skip when the source
+        // text has not changed since the last render.
+        if (debug == lastDebugChips) return
+        lastDebugChips = debug
         container.removeAllViews()
         val chips = RunResultFormat.debugChips(debug)
         if (chips.isEmpty()) {
@@ -633,6 +693,8 @@ class DemoActivity : Activity() {
         activeTimerKey = null
         completedLiveKeys.clear()
         sectionStreamLen.clear()
+        liveQa.clear()
+        lastDebugChips = null
         items.forEachIndexed { index, item -> addGroupedStep(container, index, item, animate = false) }
         // Final state is a compact summary: every dropdown closed, counts
         // and pills visible, tap to inspect a stage.
@@ -750,8 +812,11 @@ class DemoActivity : Activity() {
     // section their tokens decode into. Unknown labels stream nowhere.
     private fun tokenSection(label: String): String? = when {
         label == "stageA" -> "Stage A"
-        label.startsWith("compress#") -> "Compress"
-        label.startsWith("audit#") -> "Audit"
+        label == "stageB" -> "Stage B"
+        label == "scrub" -> "Scrub"
+        label == "hardware" -> "Hardware"
+        label.startsWith("compress#") || label == "compress" || label == "stageC" -> "Compress"
+        label.startsWith("audit#") || label == "audit" || label == "stageD" -> "Audit"
         label == "answer" -> "Answer"
         else -> null
     }
@@ -850,6 +915,9 @@ class DemoActivity : Activity() {
         header.addView(timer)
         header.addView(count)
         header.addView(chevron)
+        addTooltip(timer, "Stage execution time")
+        addTooltip(count, "Finished cards in this stage")
+        addTooltip(chevron, "Expand or collapse this stage")
         val body = animatedColumn().apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -867,6 +935,15 @@ class DemoActivity : Activity() {
             val expanded = body.visibility == View.VISIBLE
             body.visibility = if (expanded) View.GONE else View.VISIBLE
             chevron.text = if (expanded) "›" else "▼"
+            // Keep manual expands sticky: the next markSectionActive must
+            // not instantly re-collapse what the user just opened.
+            if (expanded) {
+                completedLiveKeys.remove(item.label)
+                if (expandedKey == item.label) expandedKey = null
+            } else {
+                completedLiveKeys.add(item.label)
+                expandedKey = item.label
+            }
         }
         return body
     }
@@ -996,6 +1073,12 @@ class DemoActivity : Activity() {
             labeledBlock(qa, getString(R.string.label_response), item.answer, getColor(R.color.gatekeeper_sky), true)
             row.addView(qa)
             row.setOnClickListener {
+                // Opening the inner card is meaningless inside a collapsed
+                // section: open the outer section first so the card is seen.
+                sectionBodies[item.label]?.visibility = View.VISIBLE
+                sectionChevrons[item.label]?.text = "▼"
+                completedLiveKeys.add(item.label)
+                expandedKey = item.label
                 val expanded = qa.visibility == View.VISIBLE
                 qa.visibility = if (expanded) View.GONE else View.VISIBLE
                 icon.text = if (expanded) "›" else "▼"
@@ -1059,6 +1142,7 @@ class DemoActivity : Activity() {
             filter.addAction(InferenceService.ACTION_INFER_PROGRESS)
             filter.addAction(InferenceService.ACTION_INFER_DEBUG)
             filter.addAction(InferenceService.ACTION_INFER_TOKEN)
+            filter.addAction(InferenceService.ACTION_INFER_QA)
             filter.addAction(InferenceService.ACTION_INFER_HEARTBEAT)
             filter.addAction(InferenceService.ACTION_INFER_DONE)
             registerReceiver(it, filter, RECEIVER_NOT_EXPORTED)
@@ -1081,6 +1165,7 @@ class DemoActivity : Activity() {
             startRunPulse(findViewById(R.id.statusView))
         } else if (InferenceService.lastStatus != "Idle.") {
             findViewById<TextView>(R.id.statusView).text = InferenceService.lastStatus
+            overallStatus = InferenceService.lastStatus
             currentPrompt = InferenceService.lastPrompt.ifBlank { currentPrompt }
             currentAnswer = InferenceService.lastAnswer.ifBlank { InferenceService.lastOutput }
             findViewById<TextView>(R.id.answerPromptView).text = currentPrompt
@@ -1106,6 +1191,7 @@ class DemoActivity : Activity() {
     }
 
     override fun onDestroy() {
+        runCatching { findViewById<TextView>(R.id.statusView)?.let { stopPulse() } }
         scope.cancel()
         super.onDestroy()
     }
@@ -1139,6 +1225,10 @@ class DemoActivity : Activity() {
         downloadButton: Button
     ) {
         if (ModelFiles.pick(filesDir) != null) return
+        // Rotation recreates the activity with the button re-enabled: guard
+        // so only one auto-download ever starts per process.
+        if (autoDownloadStarted) return
+        autoDownloadStarted = true
         downloadButton.isEnabled = false
         downloadProgress.visibility = View.VISIBLE
         downloadProgress.isIndeterminate = true

@@ -76,10 +76,12 @@ object PromptLoader {
             "",
             "S:[MATCH|MISMATCH]",
             "D:[0.0 to 1.0]",
+            "P:[semicolon-separated dropped items or NONE]",
+            "A:[semicolon-separated added meanings or NONE]",
             "F:[One-sentence corrective feedback or NONE]",
             "",
             "",
-            "Rule: Any missing core instruction or added meaning = MISMATCH. Stop generating text immediately after the F line value. Do not output bullets or echo original source text."
+            "Rule: Any missing core instruction or added meaning = MISMATCH. MATCH requires P:NONE and A:NONE. Stop generating text immediately after the F line value. Do not output bullets or echo original source text."
         ).joinToString("\n") + "\n"
     )
 }

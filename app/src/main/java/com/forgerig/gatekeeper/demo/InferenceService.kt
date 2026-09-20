@@ -72,6 +72,13 @@ class InferenceService : Service() {
             // finish path below, which resets everything and tells the UI.
             if (isRunning) {
                 Log.i(TAG, "cancel requested — aborting run")
+                lastStatus = "Cancelling…"
+                baseStatus = "Cancelling…"
+                sendBroadcast(
+                    Intent(ACTION_INFER_PROGRESS)
+                        .setPackage(packageName)
+                        .putExtra(EXTRA_LINE, "Cancelling…")
+                )
                 runJob?.cancel()
             }
             return START_NOT_STICKY
@@ -121,6 +128,23 @@ class InferenceService : Service() {
 
     private var debugTag = ""
     private var runJob: Job? = null
+    // Token broadcast throttle: the engine emits cumulative snapshots per
+    // decode step; batch to ~300ms (native STREAM_EMIT_MS) so the UI thread
+    // is not flooded. The final snapshot always lands via DONE render.
+    private val tokenLastEmit = mutableMapOf<String, Long>()
+
+    private fun emitTokenThrottled(label: String, cumulative: String) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val last = tokenLastEmit[label] ?: 0L
+        if (cumulative.isNotEmpty() && now - last < 300) return
+        tokenLastEmit[label] = now
+        sendBroadcast(
+            Intent(ACTION_INFER_TOKEN)
+                .setPackage(packageName)
+                .putExtra(EXTRA_STREAM_LABEL, label)
+                .putExtra(EXTRA_STREAM_TEXT, cumulative)
+        )
+    }
 
     // Liveness heartbeat: model load (up to 120s) and single inference legs
     // (up to 120s) are otherwise silent, which reads as a hang. Every 5s the
@@ -139,19 +163,20 @@ class InferenceService : Service() {
                 delay(5000)
                 if (!isRunning) return@launch
                 val base = baseStatus
-                // A tick for a ✓ completion line is useless (that stage is
-                // over) — and ticks only matter during silent stretches, so
-                // skip them.
-                if (base.contains("✓")) continue
                 val elapsed =
                     (android.os.SystemClock.elapsedRealtime() - runStartMs) / 1000
+                // Always broadcast so the stage clock keeps ticking; a ✓
+                // completion line only skips the notification — the stage is
+                // over, but its final tick still matters for short runs.
                 sendBroadcast(
                     Intent(ACTION_INFER_HEARTBEAT)
                         .setPackage(packageName)
                         .putExtra(EXTRA_HEARTBEAT_BASE, base)
                         .putExtra(EXTRA_HEARTBEAT_ELAPSED_S, elapsed)
                 )
-                nm.notify(id, runNotification("$base · ${elapsed}s elapsed"))
+                if (!base.contains("✓")) {
+                    nm.notify(id, runNotification("$base · ${elapsed}s elapsed"))
+                }
             }
         }
     }
@@ -190,24 +215,34 @@ class InferenceService : Service() {
                 } else "[MediaPipe] "
                 if (bypass) {
                     val client = BackendCache.acquire(applicationContext, model, useXnnpack)
-                    debugTag = ""
-                    val rawResult = client.generate("", prompt)
+                    debugTag = if (useXnnpack) "xnnpack" else "cpu"
+                    publish("$mode Warming up backend…", nm, id)
+                    val warmMs = BackendCache.warmup(client)
+                    val provider = BackendCache.providerOf(client)
+                    val reused = BackendCache.lastAcquireReused
+                    debug("provider", "requested=${if (useXnnpack) "XNNPACK" else "CPU"} actual=${provider ?: "?"} warmMs=$warmMs reused=$reused")
+                    val rawResult = runCatching { client.generate("", prompt) }
                     val res = monitor.stop()
                     val telemetry = "Gatekeeper pipeline bypassed — no sanitization, redaction, compression, or audit." +
                         (res?.let { "\n${it.summaryLine()}" } ?: "")
-                    val steps = RunResultFormat.encodeSteps(
-                        listOf(RunResultFormat.StepItem(
-                            "done", "Answer", "raw LLM reply, pipeline bypassed",
-                            question = prompt, answer = rawResult
-                        ))
-                    )
-                    finish(nm, id, true, "$mode RAW (gatekeeper bypassed)", rawResult, telemetry, steps, prompt = prompt, answer = rawResult)
+                    val answer = rawResult.getOrNull()
+                    if (answer != null) {
+                        val steps = RunResultFormat.encodeSteps(
+                            listOf(RunResultFormat.StepItem(
+                                "done", "Answer", "raw LLM reply, pipeline bypassed",
+                                question = prompt, answer = answer
+                            ))
+                        )
+                        finish(nm, id, true, "$mode RAW (gatekeeper bypassed)", answer, telemetry, steps, prompt = prompt, answer = answer)
+                    } else {
+                        finish(nm, id, false, "$mode RAW failed", "Answer failed: ${rawResult.exceptionOrNull()?.message}", telemetry, prompt = prompt)
+                    }
                 } else {
                     val leg = executePipeline(
                         prompt, model, useXnnpack, forceAll, mode, nm, id, microOp,
                         stopSampling = { monitor.stop()?.summaryLine() }
                     )
-                    finish(nm, id, true, leg.status, leg.output, leg.telemetry, leg.steps, prompt = prompt, answer = leg.answer ?: leg.output)
+                    finish(nm, id, leg.answer == null || !leg.answer.startsWith("Answer failed:"), leg.status, leg.output, leg.telemetry, leg.steps, prompt = prompt, answer = leg.answer ?: leg.output)
                 }
             } catch (t: Throwable) {
                 if (t is CancellationException) {
@@ -286,14 +321,21 @@ class InferenceService : Service() {
             onProgress = { line -> publish("$mode$line", nm, id) },
             onLlmEvent = { label, direction, text ->
                 if (direction == "request") qaReq[label] = text else qaRes[label] = text
+                // Mirror each finished turn live so in-progress cards can
+                // show their expandable Q/A immediately instead of waiting
+                // for the DONE rebuild.
+                if (direction == "response") {
+                    sendBroadcast(
+                        Intent(ACTION_INFER_QA)
+                            .setPackage(packageName)
+                            .putExtra(EXTRA_QA_LABEL, label)
+                            .putExtra(EXTRA_QA_QUESTION, qaReq[label].orEmpty())
+                            .putExtra(EXTRA_QA_ANSWER, text)
+                    )
+                }
             },
             onToken = { label, cumulative ->
-                sendBroadcast(
-                    Intent(ACTION_INFER_TOKEN)
-                        .setPackage(packageName)
-                        .putExtra(EXTRA_STREAM_LABEL, label)
-                        .putExtra(EXTRA_STREAM_TEXT, cumulative)
-                )
+                emitTokenThrottled(label, cumulative)
             }
         )
         val resourceLine = stopSampling()
@@ -307,16 +349,20 @@ class InferenceService : Service() {
                 val streaming = client as? com.forgerig.gatekeeper.engine.StreamingInferenceClient
                 if (streaming != null) {
                     streaming.generateStreaming("", result.safeCompressedPrompt) { partial ->
-                        sendBroadcast(
-                            Intent(ACTION_INFER_TOKEN)
-                                .setPackage(packageName)
-                                .putExtra(EXTRA_STREAM_LABEL, "answer")
-                                .putExtra(EXTRA_STREAM_TEXT, partial)
-                        )
+                        emitTokenThrottled("answer", partial)
                     }.text
                 } else client.generate("", result.safeCompressedPrompt)
             }.getOrElse { "Answer failed: ${it.message}" }
         } else null
+        if (result is GatekeeperResult.Success && answer != null && !answer.startsWith("Answer failed:")) {
+            sendBroadcast(
+                Intent(ACTION_INFER_QA)
+                    .setPackage(packageName)
+                    .putExtra(EXTRA_QA_LABEL, "answer")
+                    .putExtra(EXTRA_QA_QUESTION, result.safeCompressedPrompt)
+                    .putExtra(EXTRA_QA_ANSWER, answer)
+            )
+        }
         val (status, output, telemetry) =
             RunResultFormat.format(result, mode, resourceLine, answer)
         val resultTelemetry = when (result) {
@@ -493,6 +539,7 @@ class InferenceService : Service() {
         const val ACTION_INFER_DEBUG = "com.forgerig.gatekeeper.demo.action.INFER_DEBUG"
         const val ACTION_INFER_TOKEN = "com.forgerig.gatekeeper.demo.action.INFER_TOKEN"
         const val ACTION_INFER_HEARTBEAT = "com.forgerig.gatekeeper.demo.action.INFER_HEARTBEAT"
+        const val ACTION_INFER_QA = "com.forgerig.gatekeeper.demo.action.INFER_QA"
         const val EXTRA_PROMPT = "prompt"
         const val EXTRA_BYPASS = "bypass"
         const val EXTRA_FORCE_ALL = "force_all"
@@ -508,6 +555,9 @@ class InferenceService : Service() {
         const val EXTRA_DEBUG_LINE = "debug_line"
         const val EXTRA_STREAM_LABEL = "stream_label"
         const val EXTRA_STREAM_TEXT = "stream_text"
+        const val EXTRA_QA_LABEL = "qa_label"
+        const val EXTRA_QA_QUESTION = "qa_question"
+        const val EXTRA_QA_ANSWER = "qa_answer"
         const val EXTRA_HEARTBEAT_BASE = "heartbeat_base"
         const val EXTRA_HEARTBEAT_ELAPSED_S = "heartbeat_elapsed_s"
         const val EXTRA_ELAPSED_S = "elapsed_s"

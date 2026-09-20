@@ -100,13 +100,23 @@ class ForgeRigAgentRouter(
         compressor: PromptCompressor,
         semanticAuditor: SemanticAuditor
     ): GatekeeperResult {
-        // Step 1: Stage A Security Evaluation
-        val securityResult = securityGate.evaluate(rawPrompt)
-        if (securityResult.isMalicious || securityResult.heat == "HOT") {
+        // Step 1: Stage A Security Evaluation. Fail closed like the engine:
+        // block on isMalicious; an unparseable heat degrades to HOT.
+        val securityResult = try {
+            securityGate.evaluate(rawPrompt)
+        } catch (t: Throwable) {
+            return GatekeeperResult.FallbackRequired(
+                sanitizedPrompt = rawPrompt,
+                reason = "security gate error: ${t.message}".take(500),
+                telemetry = telemetry.copy(fallbackReason = "security gate error")
+            )
+        }
+        val heatLevel = runCatching { HeatLevel.valueOf(securityResult.heat.uppercase()) }
+            .getOrDefault(HeatLevel.HOT)
+        if (securityResult.isMalicious) {
             return GatekeeperResult.Blocked(
                 reason = securityResult.reason,
-                heat = runCatching { HeatLevel.valueOf(securityResult.heat) }
-                    .getOrDefault(HeatLevel.HOT),
+                heat = heatLevel,
                 telemetry = telemetry
             )
         }
@@ -114,10 +124,26 @@ class ForgeRigAgentRouter(
         // Step 2: Stage C Compression
         // Abstract macro-instructions (e.g. "continue work") are complete,
         // valid instructions — shorten, never answer or echo conversationally.
-        val compressedPrompt = compressor.compress(rawPrompt)
+        val compressedPrompt = try {
+            compressor.compress(rawPrompt)
+        } catch (t: Throwable) {
+            return GatekeeperResult.FallbackRequired(
+                sanitizedPrompt = rawPrompt,
+                reason = "compressor error: ${t.message}".take(500),
+                telemetry = telemetry.copy(fallbackReason = "compressor error")
+            )
+        }
 
         // Step 3: Stage D Semantic Accuracy Audit
-        val auditResult = semanticAuditor.audit(original = rawPrompt, compressed = compressedPrompt)
+        val auditResult = try {
+            semanticAuditor.audit(original = rawPrompt, compressed = compressedPrompt)
+        } catch (t: Throwable) {
+            return GatekeeperResult.FallbackRequired(
+                sanitizedPrompt = rawPrompt,
+                reason = "auditor error: ${t.message}".take(500),
+                telemetry = telemetry.copy(fallbackReason = "auditor error")
+            )
+        }
 
         // CRITICAL FIX: Explicit State Machine Hard-Stop
         // If Stage D flags a MATCH, return immediately. Bypasses secondary generation.
@@ -125,7 +151,7 @@ class ForgeRigAgentRouter(
             return GatekeeperResult.Success(
                 safeCompressedPrompt = compressedPrompt.trim(),
                 sanitizedFallback = rawPrompt,
-                heat = runCatching { HeatLevel.valueOf(securityResult.heat) }
+                heat = runCatching { HeatLevel.valueOf(securityResult.heat.uppercase()) }
                     .getOrDefault(HeatLevel.COLD),
                 telemetry = telemetry.copy(
                     postCompressionTokens = TokenEstimator.count(compressedPrompt.trim()),
@@ -144,10 +170,5 @@ class ForgeRigAgentRouter(
             reason = auditResult.feedback,
             telemetry = telemetry.copy(fallbackReason = auditResult.feedback)
         )
-    }
-
-    private fun calculateSavings(original: String, compressed: String): Double {
-        if (original.isEmpty()) return 0.0
-        return (original.length - compressed.length).toDouble() / original.length
     }
 }

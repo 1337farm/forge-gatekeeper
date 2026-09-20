@@ -121,23 +121,31 @@ object RunResultFormat {
 
     fun debugChips(debug: String): List<UiChip> {
         val chips = mutableListOf<UiChip>()
-        Regex(
+        val providerLines = Regex(
             "(?m)^\\[(?:(cpu|xnnpack):)?provider\\]\\s+" +
                 "requested=([^\\s]+)\\s+actual=([^\\s]+)\\s+" +
                 "warmMs=(\\d+)\\s+reused=(\\w+)$"
-        ).findAll(debug).forEach { match ->
+        ).findAll(debug).toList()
+        val multiLegCount = providerLines.size
+        providerLines.forEach { match ->
+            val leg = match.groupValues[1]
+            // Tag the leg only in multi-leg (benchmark) runs: single-leg
+            // chips keep their short text, while benchmark legs no longer
+            // collapse into one chip via distinctBy.
+            val multiLeg = multiLegCount > 1
+            val tag = if (leg.isNotBlank() && multiLeg) " [$leg]" else ""
             val requested = match.groupValues[2]
             val actual = match.groupValues[3].takeUnless { it == "?" } ?: requested
-            if (actual.isNotBlank()) chips.add(UiChip("EP ${actual.uppercase()}", "info"))
+            if (actual.isNotBlank()) chips.add(UiChip("EP ${actual.uppercase()}$tag", "info"))
             val warmMs = match.groupValues[4].toLongOrNull() ?: 0L
-            if (warmMs > 0) chips.add(UiChip("WARM ${"%.1f".format(warmMs / 1000.0)}s", "muted"))
+            if (warmMs > 0) chips.add(UiChip("WARM ${"%.1f".format(warmMs / 1000.0)}s$tag", "muted"))
             val reused = match.groupValues[5].toBoolean()
-            chips.add(UiChip(if (reused) "REUSED" else "NEW", if (reused) "success" else "warning"))
+            chips.add(UiChip((if (reused) "REUSED" else "NEW") + tag, if (reused) "success" else "warning"))
         }
         if (debug.contains("force-all ON", ignoreCase = true)) {
             chips.add(UiChip("FORCE-ALL", "warning"))
         }
-        return chips.distinctBy { it.text }
+        return chips.distinctBy { it.text to it.tone }
     }
 
     fun splitRequest(question: String): StepRequest {
@@ -249,9 +257,12 @@ object RunResultFormat {
         } else if (parts.size == 5) {
             val q = unb64(parts[3])
             val a = unb64(parts[4])
-            if (q == null || a == null) null
-            else StepItem(parts[0], parts[1], parts[2], q, a)
-        } else null
+            if (q == null || a == null) {
+                // Corrupt payload: keep a visible placeholder so the
+                // timeline never silently shortens.
+                StepItem("skip", "Step", "undecodable timeline row")
+            } else StepItem(parts[0], parts[1], parts[2], q, a)
+        } else StepItem("skip", "Step", "undecodable timeline row")
     }
 
     fun resolveAuditPlaceholders(items: List<StepItem>): List<StepItem> {

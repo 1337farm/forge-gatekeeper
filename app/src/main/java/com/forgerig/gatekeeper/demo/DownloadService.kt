@@ -22,6 +22,8 @@ class DownloadService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var running = 0
     private var nextId = 1
+    private var activeSpec: String? = null
+    private var downloadJob: kotlinx.coroutines.Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -57,9 +59,20 @@ class DownloadService : Service() {
             ACTION_MODEL -> {
                 val spec = intent.getStringExtra(EXTRA_SPEC).orEmpty()
                 val token = intent.getStringExtra(EXTRA_TOKEN).orEmpty()
+                // Duplicate-tap guard: a second start for the same spec while
+                // a download is in flight would spawn a parallel writer on
+                // the same .part file. Ignore it; progress keeps flowing.
+                if (running > 0 && activeSpec == spec) {
+                    android.util.Log.i(TAG, "download already in flight for $spec — ignoring duplicate tap")
+                    return START_NOT_STICKY
+                }
+                activeSpec = spec
                 runDownload(KIND_MODEL, "Downloading model") { notify ->
                     downloadModel(spec, token, notify)
                 }
+            }
+            ACTION_CANCEL -> {
+                downloadJob?.cancel()
             }
         }
         return START_NOT_STICKY
@@ -73,7 +86,9 @@ class DownloadService : Service() {
         running++
         val id = nextId++
         acquireWakeLock()
-        scope.launch {
+        hasActiveDownload = true
+        downloadJob?.cancel()
+        downloadJob = scope.launch {
             val nm = getSystemService(NotificationManager::class.java)
             startForeground(id, progressNotification(title, -1, -1), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
             var lastSent = 0L
@@ -91,11 +106,17 @@ class DownloadService : Service() {
                 nm.notify(id, doneNotification(title, true, detail))
                 broadcast(kind, true, detail)
             } catch (t: Throwable) {
-                if (t is CancellationException) throw t
+                if (t is CancellationException) {
+                    nm.notify(id, doneNotification(title, false, "Cancelled"))
+                    broadcast(kind, false, "Cancelled")
+                    throw t
+                }
                 nm.notify(id, doneNotification(title, false, t.message ?: "failed"))
                 broadcast(kind, false, t.message ?: "failed")
             } finally {
                 if (--running == 0) {
+                    activeSpec = null
+                    hasActiveDownload = false
                     releaseWakeLock()
                     stopSelf()
                 }
@@ -177,6 +198,7 @@ class DownloadService : Service() {
 
     companion object {
         const val ACTION_MODEL = "com.forgerig.gatekeeper.demo.action.MODEL"
+        const val ACTION_CANCEL = "com.forgerig.gatekeeper.demo.action.CANCEL_DOWNLOAD"
         const val ACTION_DONE = "com.forgerig.gatekeeper.demo.action.DONE"
         const val ACTION_PROGRESS = "com.forgerig.gatekeeper.demo.action.PROGRESS"
         const val EXTRA_SPEC = "spec"
@@ -188,6 +210,10 @@ class DownloadService : Service() {
         const val EXTRA_TOTAL = "total"
         const val KIND_MODEL = "model"
         private const val CHANNEL = "downloads"
+        private const val TAG = "DownloadService"
+        @Volatile
+        var hasActiveDownload: Boolean = false
+            private set
 
         fun startModelDownload(context: Context, spec: String, token: String) {
             context.startForegroundService(
