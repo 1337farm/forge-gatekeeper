@@ -563,8 +563,11 @@ class GatekeeperEngine(
             .replace(s, "")
         val lines = s.lines()
         val marker = Regex("(?i)^(?:example|examples|original|compressed|response|output)\\s*:")
-        val cut = lines.indices.drop(1).firstOrNull { marker.containsMatchIn(lines[it]) }
-        if (cut != null) s = lines.subList(0, cut).joinToString("\n")
+        // Trim before matching: small models indent continuation candidates
+        // ("  output: …"), which previously slipped past the cut and leaked
+        // whole multi-candidate loops into the auditor.
+        val cut = lines.indices.drop(1).firstOrNull { marker.containsMatchIn(lines[it].trim()) }
+        if (cut != null) s = lines.subList(0, cut).joinToString("\n").trimEnd()
         s = s.trim()
         if (s.length >= 2) {
             val first = s.first()
@@ -694,8 +697,11 @@ class GatekeeperEngine(
             v.trim('[', ']').trim().toDoubleOrNull()
         } ?: 0.0
         val feedback = block["F"] ?: block["FEEDBACK"] ?: ""
-        return if (status.equals("MATCH", ignoreCase = true)) AccuracyAuditResult.Match(drift)
-        else AccuracyAuditResult.Mismatch(
+        // A MATCH that still lists dropped items or hallucinations is not a
+        // match: coerce to MISMATCH so the retry loop feeds FEEDBACK back to
+        // the compressor instead of rubber-stamping context loss.
+        return verdictOrMismatch(
+            status,
             drift,
             delineatedList(block["DROPPED"]),
             delineatedList(block["HALLUCINATIONS"]),
@@ -703,13 +709,33 @@ class GatekeeperEngine(
         )
     }
 
+    private fun verdictOrMismatch(
+        status: String,
+        drift: Double,
+        dropped: List<String>,
+        hallucinations: List<String>,
+        feedback: String
+    ): AccuracyAuditResult {
+        if (status.equals("MATCH", ignoreCase = true) &&
+            dropped.isEmpty() && hallucinations.isEmpty()
+        ) return AccuracyAuditResult.Match(drift)
+        if (status.equals("MATCH", ignoreCase = true)) {
+            val why = buildString {
+                if (dropped.isNotEmpty()) append("dropped=${dropped}. ")
+                if (hallucinations.isNotEmpty()) append("hallucinations=${hallucinations}. ")
+                append(feedback.ifBlank { "Restore every dropped item with zero additions." })
+            }
+            return AccuracyAuditResult.Mismatch(drift, dropped, hallucinations, why.trim())
+        }
+        return AccuracyAuditResult.Mismatch(drift, dropped, hallucinations, feedback)
+    }
+
     private fun parseAuditBody(body: String): AccuracyAuditResult {
         val p = JSONObject(body)
         val status = p.optString("status")
         val drift = p.optDouble("drift_score")
-        return if (status.equals("MATCH", true)) AccuracyAuditResult.Match(drift)
-        else AccuracyAuditResult.Mismatch(
-            drift,
+        return verdictOrMismatch(
+            status, drift,
             p.optStringList("dropped_constraints"),
             p.optStringList("hallucinations"),
             p.optString("corrective_feedback")
@@ -772,9 +798,8 @@ class GatekeeperEngine(
             Regex(""""$key"\s*:\s*"(.*?)"""", RegexOption.DOT_MATCHES_ALL)
                 .find(json)?.groupValues?.get(1) ?: ""
         val drift = number("drift_score")
-        return if (status.equals("MATCH", true)) AccuracyAuditResult.Match(drift)
-        else AccuracyAuditResult.Mismatch(
-            drift,
+        return verdictOrMismatch(
+            status, drift,
             arrayOf("dropped_constraints"),
             arrayOf("hallucinations"),
             textOf("corrective_feedback")

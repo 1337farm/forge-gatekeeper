@@ -329,6 +329,24 @@ class GatekeeperEngineTest {
     }
 
     @Test
+    fun `cleanCandidate cuts indented multi-output loops`() {
+        val engine = GatekeeperEngine(fakeInference { _, _, _ -> "" }, eligible())
+        val raw = "Can LLM use SSD reads?\n\n  output: shorter one?\n\n\tOUTPUT: even shorter?"
+        assertEquals("Can LLM use SSD reads?", engine.cleanCandidate(raw))
+    }
+
+    @Test
+    fun `delineated audit match with drops becomes mismatch`() {
+        val engine = GatekeeperEngine(fakeInference { _, _, _ -> "" }, eligible())
+        val raw = "STATUS: MATCH\nDRIFT: 0.1\nDROPPED: ram\nHALLUCINATIONS: NONE\nFEEDBACK: include ram"
+        val r = engine.parseAudit(raw)
+        assertTrue(r is AccuracyAuditResult.Mismatch)
+        r as AccuracyAuditResult.Mismatch
+        assertEquals(listOf("ram"), r.droppedConstraints)
+        assertTrue(r.correctiveFeedback.isNotBlank())
+    }
+
+    @Test
     fun `buildCompressionInput frames the prompt with markers`() {
         val engine = GatekeeperEngine(fakeInference { _, _, _ -> "" }, eligible())
         val first = engine.buildCompressionInput("please do X", "", null)

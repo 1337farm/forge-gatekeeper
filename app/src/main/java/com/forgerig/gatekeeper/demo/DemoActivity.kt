@@ -54,9 +54,15 @@ class DemoActivity : Activity() {
     private val sectionStartMs = LinkedHashMap<String, Long>()
     private var activeTimerKey: String? = null
     // The one expanded dropdown: only the active stage stays open while
-    // running (completed sections collapse as the next stage starts), and
-    // the final render collapses everything into a compact summary.
+    // running; stages finished live stay fully expanded, and the final
+    // render collapses everything into a compact summary.
     private var expandedKey: String? = null
+    // Stages finished during the live run stay fully expanded (section +
+    // inner Q/A) while later stages stream; post-run review collapses all.
+    private val completedLiveKeys = LinkedHashSet<String>()
+    // Last cumulative stream length per stage: guards the shared live row
+    // against stale/duplicate broadcasts and progress-line clobbering.
+    private val sectionStreamLen = LinkedHashMap<String, Int>()
     // Last overall (non-stage) status line; heartbeat ticks append the total
     // counter to it instead of flashing stage lines above the list.
     private var overallStatus = "Running on-device…"
@@ -198,7 +204,12 @@ class DemoActivity : Activity() {
                                 val body = ensureLiveSection(key)
                                 sectionPlaceholders.remove(key)?.let { body.removeView(it) }
                                 markSectionActive(key)
-                                liveRow(key, body).text = line.substringAfter("] ", line).trim()
+                                // Never clobber an active decode stream with a
+                                // short status line: the finished card replaces
+                                // the live row on completion.
+                                if (!sectionLiveViews.containsKey(key) || (sectionStreamLen[key] ?: 0) == 0) {
+                                    liveRow(key, body).text = line.substringAfter("] ", line).trim()
+                                }
                                 sectionCounts[key]?.text = "${body.childCount}"
                             } ?: run {
                                 overallStatus = line
@@ -223,12 +234,38 @@ class DemoActivity : Activity() {
                         val text = intent.getStringExtra(InferenceService.EXTRA_STREAM_TEXT).orEmpty()
                         // Tokens land inside their stage's own section card —
                         // the section fills live instead of a raw block above.
+                        // Broadcasts are cumulative snapshots: ignore stale or
+                        // duplicate arrivals so the paragraph only grows, and
+                        // never rewrites identical text (each rewrite retriggers
+                        // layout and reads as looping/cycling).
                         tokenSection(label)?.let { key ->
+                            val lastLen = sectionStreamLen[key] ?: 0
+                            if (text.isEmpty() || (text.length == lastLen && sectionLiveViews.containsKey(key))) {
+                                return
+                            }
+                            // Shorter snapshot after content exists means a new
+                            // turn/restart for this stage: accept as a reset.
                             val body = ensureLiveSection(key)
                             sectionPlaceholders.remove(key)?.let { body.removeView(it) }
                             markSectionActive(key)
                             val live = liveRow(key, body)
-                            live.text = "Decoding $label…\n" + text.takeLast(800)
+                            val shown = if (text.length > 800) {
+                                // Cut at a line boundary so the visible window
+                                // doesn't jump mid-word as tokens stream in.
+                                val tail = text.takeLast(800)
+                                tail.substringAfter("\n", tail)
+                            } else text
+                            val next = "Decoding $label…\n" + shown
+                            if (live.text.toString() != next) {
+                                // Suppress the section's layout transition for
+                                // per-token paints: height changes would
+                                // otherwise slide-down on every token.
+                                val lt = body.layoutTransition
+                                body.layoutTransition = null
+                                live.text = next
+                                body.layoutTransition = lt
+                            }
+                            sectionStreamLen[key] = text.length
                             sectionCounts[key]?.text = "${body.childCount}"
                         }
                         return
@@ -378,6 +415,8 @@ class DemoActivity : Activity() {
             sectionStartMs.clear()
             activeTimerKey = null
             expandedKey = null
+            completedLiveKeys.clear()
+            sectionStreamLen.clear()
             // Sections exist from tap time: each fills as its stage starts
             // (live decode), progresses (finished cards), and completes.
             // Bypass runs a single Answer turn, so shells would only linger
@@ -592,6 +631,8 @@ class DemoActivity : Activity() {
         sectionTimers.clear()
         sectionStartMs.clear()
         activeTimerKey = null
+        completedLiveKeys.clear()
+        sectionStreamLen.clear()
         items.forEachIndexed { index, item -> addGroupedStep(container, index, item, animate = false) }
         // Final state is a compact summary: every dropdown closed, counts
         // and pills visible, tap to inspect a stage.
@@ -645,8 +686,18 @@ class DemoActivity : Activity() {
     private fun markSectionActive(key: String) {
         ensureLiveSection(key)
         if (expandedKey != key) {
-            sectionBodies.keys.forEach { other -> setSectionExpanded(other, other == key) }
+            // Completed live stages stay fully expanded; only pending
+            // stages collapse as the active stream moves on.
+            sectionBodies.keys.forEach { other ->
+                when {
+                    other == key -> setSectionExpanded(other, true)
+                    completedLiveKeys.contains(other) -> setSectionExpanded(other, true)
+                    else -> setSectionExpanded(other, false)
+                }
+            }
             expandedKey = key
+        } else {
+            setSectionExpanded(key, true)
         }
         if (!sectionStartMs.containsKey(key)) {
             sectionStartMs[key] = android.os.SystemClock.elapsedRealtime()
@@ -828,10 +879,15 @@ class DemoActivity : Activity() {
         // freezes the section clock at its final value.
         sectionPlaceholders.remove(item.label)?.let { body.removeView(it) }
         sectionLiveViews.remove(item.label)?.let { body.removeView(it) }
+        sectionStreamLen.remove(item.label)
         freezeSectionTimer(item.label)
-        val card = stepCard(index, item, ui)
+        // Live completions land fully expanded (section + inner Q/A);
+        // post-run review renders collapsed for a compact summary.
+        val card = stepCard(index, item, ui, startExpanded = animate)
         body.addView(card)
         if (animate) {
+            completedLiveKeys.add(item.label)
+            setSectionExpanded(item.label, true)
             card.alpha = 0f
             card.translationY = dp(8).toFloat()
             card.animate().alpha(1f).translationY(0f).setDuration(250).start()
@@ -839,7 +895,7 @@ class DemoActivity : Activity() {
         sectionCounts[item.label]?.text = "${body.childCount}"
     }
 
-    private fun stepCard(index: Int, item: RunResultFormat.StepItem, ui: RunResultFormat.StepUi): LinearLayout {
+    private fun stepCard(index: Int, item: RunResultFormat.StepItem, ui: RunResultFormat.StepUi, startExpanded: Boolean = false): LinearLayout {
         val hasQa = item.question.isNotBlank() || item.answer.isNotBlank()
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -911,7 +967,7 @@ class DemoActivity : Activity() {
         top.addView(meta)
         top.addView(pill(ui.statusText, ui.statusTone))
         val icon = TextView(this).apply {
-            text = if (hasQa) "›" else ""
+            text = if (hasQa && startExpanded) "▼" else if (hasQa) "›" else ""
             textSize = 18f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             setTextColor(getColor(R.color.gatekeeper_muted))
@@ -923,12 +979,16 @@ class DemoActivity : Activity() {
         top.addView(icon)
         row.addView(top)
         if (hasQa) {
-            val qa = animatedColumn().apply {
+            // Plain container, no LayoutTransition: the outer section body
+            // already animates, so an animated inner block would double up
+            // into a nested slide-down on every expand.
+            val qa = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply { topMargin = dp(8) }
-                visibility = View.GONE
+                visibility = if (startExpanded) View.VISIBLE else View.GONE
             }
             val split = RunResultFormat.splitRequest(item.question)
             labeledBlock(qa, getString(R.string.label_system_prompt), split.system, getColor(R.color.gatekeeper_muted), true)
