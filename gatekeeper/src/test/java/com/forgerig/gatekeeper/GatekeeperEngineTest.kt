@@ -549,6 +549,35 @@ class GatekeeperEngineTest {
     }
 
     @Test
+    fun `stageA verdicts tolerate trailing punctuation`() {
+        val engine = GatekeeperEngine(fakeInference { _, _, _ -> "" }, eligible())
+        val raw = "HEAT: COLD;\nINJECTION: SAFE;\nREASON: technical text.\nAMBIENT_PII: NONE\nCOMPLETENESS: READY;\nMISSING: None."
+        val p = engine.parseStageA(raw)
+        assertEquals("COLD", p.heat)
+        assertEquals("SAFE", p.injection)
+        assertEquals("READY", p.completeness)
+    }
+
+    @Test
+    fun `punctuated safe verdict runs the full pipeline`() = runTest {
+        val punctuated = "{\"heat\":\"COLD;\",\"injection\":\"SAFE;\"," +
+            "\"injection_reason\":\"\",\"ambient_pii\":[]," +
+            "\"completeness\":\"READY;\",\"missing_context\":\"\"}"
+        val engine = GatekeeperEngine(fakeInference { _, _, n ->
+                when (n) {
+                    1 -> punctuated
+                    2 -> "SHORT: do X with param 42"
+                    else -> "{\"status\":\"MATCH\",\"drift_score\":0.02," +
+                        "\"dropped_constraints\":[],\"hallucinations\":[],\"corrective_feedback\":\"\"}"
+                }
+            },
+            eligible()
+        )
+        val r = engine.processPrompt("please do X with param 42 right now without any delay whatsoever", GatekeeperConfig())
+        assertTrue(r is GatekeeperResult.Success)
+    }
+
+    @Test
     fun `compress records carry token counts`() = runTest {
         val engine = GatekeeperEngine(fakeInference { _, _, n ->
                 when (n) {
