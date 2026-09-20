@@ -883,23 +883,32 @@ class GatekeeperEngine(
             val injection = (b["I"] ?: b["INJECTION"]).takeIf { !it.isNullOrBlank() } ?: "SAFE"
             val reason = (b["R"] ?: b["REASON"]).orEmpty()
             return StageAPayload(
-                heat = heat.trim().trim('[', ']').trim().ifBlank { "COLD" },
-                injection = injection.trim().trim('[', ']').trim().ifBlank { "SAFE" },
+                heat = scrubVerdict(heat, "COLD"),
+                injection = scrubVerdict(injection, "SAFE"),
                 injection_reason = reason,
                 ambient_pii = pii,
-                completeness = b["COMPLETENESS"]?.takeIf { it.isNotBlank() } ?: "READY",
+                completeness = scrubVerdict(b["COMPLETENESS"]?.takeIf { it.isNotBlank() } ?: "READY", "READY"),
                 missing_context = b["MISSING"].orEmpty()
             )
         }
         val p = JSONObject(raw)
         return StageAPayload(
-            heat = p.getString("heat"),
-            injection = p.getString("injection"),
+            heat = scrubVerdict(p.getString("heat"), "COLD"),
+            injection = scrubVerdict(p.getString("injection"), "SAFE"),
             injection_reason = p.optString("injection_reason"),
             ambient_pii = p.optStringList("ambient_pii"),
             completeness = p.optString("completeness", "READY"),
             missing_context = p.optString("missing_context")
         )
+    }
+
+    // Small models punctuate verdicts ("SAFE;", "[COLD]", "warm,"): strip
+    // wrappers and trailing punctuation so valueOf sees the bare token.
+    // Anything still unknown falls back to the safe default — fail-closed
+    // handling upstream decides whether that blocks or falls back.
+    internal fun scrubVerdict(raw: String, default: String): String {
+        val t = raw.trim().trim('[', ']', '"', '\'').trim().trimEnd(';', ',', '.', ':').trim()
+        return t.ifBlank { default }
     }
 
     private fun JSONObject.optStringList(key: String): List<String> {
