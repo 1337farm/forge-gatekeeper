@@ -274,6 +274,7 @@ class DemoActivity : Activity() {
                         val elapsedS = intent.getLongExtra(InferenceService.EXTRA_ELAPSED_S, -1)
                         if (elapsedS >= 0) {
                             stylePill(totalBadge, "TOTAL ${elapsedS}s", "info")
+                            addTooltip(totalBadge, "Total run time for this execution")
                             totalBadge.visibility = View.VISIBLE
                         } else {
                             totalBadge.visibility = View.GONE
@@ -416,7 +417,8 @@ class DemoActivity : Activity() {
         view.setPadding(dp(10), dp(4), dp(10), dp(4))
     }
 
-    private fun pill(text: String, tone: String): TextView {
+    private fun pill(text: String, tone: String, description: String? = null): TextView {
+        val desc = description ?: badgeTooltip(text)
         return TextView(this).apply {
             textSize = 10f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
@@ -425,6 +427,58 @@ class DemoActivity : Activity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { marginEnd = dp(6) }
         }.also { stylePill(it, text, tone) }
+            .also { if (desc.isNotBlank()) addTooltip(it, desc) }
+    }
+
+    private fun badgeTooltip(text: String): String = when (text) {
+        "SAFE" -> "Input passed safety check — no malicious content detected"
+        "MATCH" -> "Audit found matching answers — accuracy preserved"
+        "MISMATCH" -> "Audit found different answers — may need review"
+        "REUSED" -> "Backend reused from previous run (warm)"
+        "NEW" -> "Fresh backend allocation (cold start)"
+        "WARM" -> "Backend warmup time in seconds"
+        "COLD" -> "Heat=COLD — safe path, low risk"
+        "WARM_HEAT" -> "Heat=WARM — moderate risk"
+        "HOT" -> "Heat=HOT — high risk, requires attention"
+        "FORCE-ALL" -> "All stages forced to run (overrides skips)"
+        "ELIGIBLE" -> "Input eligible for compression"
+        "NO PII" -> "No PII detected"
+        "READY" -> "Stage ready"
+        "GUARD" -> "Expansion guard prevented compression"
+        "RETRIES" -> "Maximum retries exhausted"
+        "TIMEOUT" -> "Operation timed out"
+        "MALICIOUS" -> "Malicious input detected — blocked"
+        "NEEDS CONTEXT" -> "Missing context — cannot evaluate"
+        "NO AMBIENT PII" -> "No ambient PII found"
+        "ITER" -> "Compression iteration count"
+        "PII 0" -> "No PII redactions needed"
+        "DRIFT" -> "Answer drift score"
+        "DONE" -> "Stage completed successfully"
+        "SKIPPED" -> "Stage skipped (not required for this input)"
+        "PENDING" -> "Stage pending"
+        "FAILED" -> "Stage failed"
+        "SCRUB" -> "Deterministic scrub — removes secrets and PII"
+        "DEVICE" -> "Hardware circuit check — validates device capability"
+        "SAFETY" -> "Stage A — safety evaluation"
+        "PII" -> "Stage B — PII redaction"
+        "COMPRESS" -> "Stage C — semantic compression"
+        "AUDIT" -> "Stage D — accuracy audit"
+        "FALLBACK" -> "Fallback to sanitized prompt"
+        "ANSWER" -> "Answer generation"
+        "STEP" -> "Pipeline step"
+        else -> ""
+    }
+
+    private fun addTooltip(view: TextView, text: String) {
+        if (text.isBlank()) return
+        view.contentDescription = text
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            view.tooltipText = text
+        }
+        view.setOnLongClickListener {
+            Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
+            true
+        }
     }
 
     private fun animatedColumn(): LinearLayout {
@@ -490,8 +544,21 @@ class DemoActivity : Activity() {
             badge.visibility = View.GONE
             return
         }
+        val desc = when (label) {
+            "RUNNING" -> "Processing is in progress"
+            "SUCCESS" -> "Successfully completed"
+            "DONE" -> "Completed successfully"
+            "CANCELLED" -> "Cancelled by user"
+            "FALLBACK" -> "Pipeline fell back to sanitized mode"
+            "BENCHMARK" -> "Benchmark comparison mode"
+            "BLOCKED" -> "Input was blocked by gatekeeper"
+            "ERROR" -> "An error occurred during processing"
+            "RAW" -> "Raw LLM output (pipeline bypassed)"
+            else -> "Unknown status"
+        }
         badge.visibility = View.VISIBLE
         stylePill(badge, label, tone)
+        addTooltip(badge, desc)
     }
 
     private fun renderDebugChips(container: LinearLayout, debug: String) {
@@ -711,11 +778,17 @@ class DemoActivity : Activity() {
         }
         // Per-stage stopwatch badge ("12s"): hidden until the stage shows
         // activity, counting while active, frozen on completion.
-        val timer = pill("0s", "info").apply {
+        val timer = TextView(this).apply {
+            text = "0s"
+            textSize = 11f
+            setTextColor(getColor(R.color.gatekeeper_muted))
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(8) }
             visibility = View.GONE
-            layoutParams = (layoutParams as LinearLayout.LayoutParams).apply {
-                marginEnd = dp(8)
-            }
+            setOnTouchListener { _, _ -> false }
         }
         val chevron = TextView(this).apply {
             text = "▼"
