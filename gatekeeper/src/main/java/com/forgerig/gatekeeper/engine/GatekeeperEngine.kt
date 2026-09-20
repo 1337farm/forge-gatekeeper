@@ -211,11 +211,25 @@ class GatekeeperEngine(
                 ledger(preTokens, fallback = cause)
             )
         }
+        // The judge over-reports missing context on ordinary short
+        // prompts (observed: "MISSING_CONTEXT: need the ci command" for a
+        // plain 3-question input). Treat MISSING_CONTEXT as advisory, never
+        // a hard stop: proceed as READY and record the gap in the reason
+        // line. The compress→audit loop remains the real semantic guard.
+        val missingContext = stageA.completeness.equals("MISSING_CONTEXT", ignoreCase = true)
+        if (missingContext) {
+            Log.w(tag, "stage_a missing context advisory: ${stageA.missing_context}".take(500))
+        }
         rec(
             GatekeeperStep.STAGE_A_SECURITY_EVAL, StepStatus.EXECUTED,
-            "heat=$heat injection=$injection completeness=${stageA.completeness}", 0, System.currentTimeMillis() - s3
+            "heat=$heat injection=$injection completeness=${stageA.completeness}" +
+                (if (missingContext) " (advisory: ${stageA.missing_context}".take(500) + ")" else ""),
+            0, System.currentTimeMillis() - s3
         )
-        onProgress("Stage A ✓ heat=$heat injection=$injection (${elapsed()})")
+        onProgress(
+            "Stage A ✓ heat=$heat injection=$injection completeness=${stageA.completeness}" +
+                (if (missingContext) " (advisory)" else "") + " (${elapsed()})"
+        )
 
         if (injection == InjectionVerdict.MALICIOUS) {
             for (s in listOf(
@@ -228,24 +242,6 @@ class GatekeeperEngine(
             val reason = "MALICIOUS blocked: ${stageA.injection_reason}".take(500)
             Log.w(tag, reason)
             return GatekeeperResult.Blocked(reason, heat, ledger(preTokens, injected = true, fallback = reason))
-        }
-        // Completeness is parsed but must also be acted on: MISSING_CONTEXT
-        // means the judge cannot evaluate, so fall back to sanitized rather
-        // than compressing blind.
-        if (stageA.completeness.equals("MISSING_CONTEXT", ignoreCase = true)) {
-            for (s in listOf(
-                GatekeeperStep.STAGE_B_PII_REDACTION, GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION,
-                GatekeeperStep.STAGE_D_ACCURACY_AUDIT
-            )) {
-                rec(s, StepStatus.SKIPPED, "missing context")
-                skipped[s.name] = "missing context"
-            }
-            val reason = "missing context: ${stageA.missing_context}".take(500)
-            rec(GatekeeperStep.FALLBACK_TO_SANITIZED, StepStatus.EXECUTED, reason)
-            return GatekeeperResult.FallbackRequired(
-                sanitized, reason,
-                ledger(preTokens, fallback = reason)
-            )
         }
         // The on-device judge over-reports: observed ambient_pii:["hi"] for
         // the input "hi", which Stage B then masked into oblivion. Validate

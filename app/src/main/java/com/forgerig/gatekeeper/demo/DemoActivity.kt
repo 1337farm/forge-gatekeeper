@@ -256,10 +256,28 @@ class DemoActivity : Activity() {
                         val question = intent.getStringExtra(InferenceService.EXTRA_QA_QUESTION).orEmpty()
                         val answer = intent.getStringExtra(InferenceService.EXTRA_QA_ANSWER).orEmpty()
                         // Engine turn labels ("compress#2", "audit#1") share
-                        // the section mapping with token streams.
+                        // the section mapping with token streams. The turn
+                        // retrofills its live card when one exists: without
+                        // this, completion-line stubs stay Q/A-less and raw
+                        // until the DONE rebuild.
+                        if (question.isBlank() && answer.isBlank()) return
+                        val turn = RunResultFormat.QaTurn(question, answer)
                         tokenSection(label)?.let { key ->
-                            if (question.isNotBlank() || answer.isNotBlank()) {
-                                liveQa[key] = RunResultFormat.QaTurn(question, answer)
+                            liveQa[key] = turn
+                            val idx = lastSteps.indexOfFirst { it.label == key }
+                            if (idx >= 0) {
+                                val filled = lastSteps[idx].copy(question = turn.question, answer = turn.answer)
+                                lastSteps = lastSteps.toMutableList().also { it[idx] = filled }
+                                sectionBodies[key]?.let { body ->
+                                    val ui = RunResultFormat.stepUi(filled)
+                                    stepCards.remove(key)?.let { body.removeView(it) }
+                                    val card = stepCard(idx, filled, ui, startExpanded = true)
+                                    body.addView(card)
+                                    stepCards[key] = card
+                                    completedLiveKeys.add(key)
+                                    setSectionExpanded(key, true)
+                                    sectionCounts[key]?.text = "${body.childCount}"
+                                }
                             }
                         }
                         return
@@ -275,6 +293,9 @@ class DemoActivity : Activity() {
                         return
                     }
                     InferenceService.ACTION_INFER_DONE -> {
+                        // Cancel always lands here (finish() broadcasts from
+                        // the cancelled path too): re-enable unconditionally
+                        // so "Cancelling…" + disabled button can never wedge.
                         runButton.isEnabled = true
                         runButton.text = getString(R.string.run)
                         val ok = intent.getBooleanExtra(InferenceService.EXTRA_OK, false)
@@ -415,6 +436,7 @@ class DemoActivity : Activity() {
             expandedKey = null
             completedLiveKeys.clear()
             sectionStreamLen.clear()
+            stepCards.clear()
             liveQa.clear()
             lastDebugChips = null
             // Sections exist from tap time: each fills as its stage starts
@@ -698,6 +720,7 @@ class DemoActivity : Activity() {
         sectionTimers.clear()
         sectionStartMs.clear()
         activeTimerKey = null
+        stepCards.clear()
         completedLiveKeys.clear()
         sectionStreamLen.clear()
         liveQa.clear()
@@ -955,6 +978,11 @@ class DemoActivity : Activity() {
         return body
     }
 
+    // One in-section card per stage label: completion/retry lines share a
+    // single replaceable slot so replays, retries and reopen-replays never
+    // stack duplicate Q/A-less stubs above the real card.
+    private val stepCards = LinkedHashMap<String, LinearLayout>()
+
     private fun addGroupedStep(container: LinearLayout, index: Int, item: RunResultFormat.StepItem, animate: Boolean, fullExpand: Boolean = animate) {
         val ui = RunResultFormat.stepUi(item)
         val body = ensureSection(container, item, ui)
@@ -965,11 +993,16 @@ class DemoActivity : Activity() {
         sectionLiveViews.remove(item.label)?.let { body.removeView(it) }
         sectionStreamLen.remove(item.label)
         freezeSectionTimer(item.label)
+        // Completion lines carry no Q/A: a same-label stub from an earlier
+        // retry must go first, then the completed turn (QA broadcast or
+        // DONE rebuild) replaces it.
+        stepCards.remove(item.label)?.let { body.removeView(it) }
         // Live completions land fully expanded (section + inner Q/A);
         // post-run review renders collapsed for a compact summary. Replays
         // expand without the entry animation.
         val card = stepCard(index, item, ui, startExpanded = fullExpand)
         body.addView(card)
+        stepCards[item.label] = card
         if (fullExpand) {
             completedLiveKeys.add(item.label)
             setSectionExpanded(item.label, true)
