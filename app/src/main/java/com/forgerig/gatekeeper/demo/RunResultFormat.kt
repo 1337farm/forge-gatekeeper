@@ -249,6 +249,19 @@ object RunResultFormat {
     fun encodeSteps(items: List<StepItem>): ArrayList<String> =
         ArrayList(items.map { "${it.kind}|${it.label}|${it.detail}|${b64(it.question)}|${b64(it.answer)}" })
 
+    // Single Q/A turn codec for the service's reopen-replay snapshot, keyed
+    // by engine label. Base64 never contains "|", so the framing can't desync.
+    fun encodeQa(question: String, answer: String): String =
+        "${b64(question)}|${b64(answer)}"
+
+    fun decodeQa(s: String): QaTurn? {
+        val parts = s.split("|", limit = 2)
+        if (parts.size != 2) return null
+        val q = unb64(parts[0]) ?: return null
+        val a = unb64(parts[1]) ?: return null
+        return QaTurn(q, a)
+    }
+
     fun decodeSteps(raw: List<String>): List<StepItem> = raw.mapNotNull { s ->
         val parts = s.split("|", limit = 5)
         if (parts.size == 3) {
