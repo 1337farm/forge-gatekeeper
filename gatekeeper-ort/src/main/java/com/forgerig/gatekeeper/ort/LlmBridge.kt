@@ -33,13 +33,18 @@ object LlmBridge {
     external fun nativeGetProvider(handle: Long): String
 
     // Streams up to maxNewTokens tokens; returns the generated token count.
-    // Throws RuntimeException on inference failure.
+    // Throws RuntimeException on inference failure, CancellationException
+    // when nativeCancelGenerate() aborted the decode loop.
     external fun nativeGenerate(
         handle: Long,
         prompt: String,
         maxNewTokens: Int,
         listener: TokenListener
     ): Int
+
+    // Hard-cancel hook: bumps the native decode-loop epoch so any in-flight
+    // nativeGenerate aborts at its next token instead of running to cap.
+    external fun nativeCancelGenerate()
 
     external fun nativeRelease(handle: Long)
 }

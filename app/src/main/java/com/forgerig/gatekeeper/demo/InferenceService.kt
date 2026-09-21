@@ -66,10 +66,10 @@ class InferenceService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CANCEL) {
-            // Cooperative cancel: the run coroutine aborts at its next
-            // suspension point (between stages — a blocking native decode
-            // can't be preempted mid-call) and lands in the cancelled
-            // finish path below, which resets everything and tells the UI.
+            // Hard cancel: coroutine cancel alone can't preempt a blocking
+            // native decode, so signal the native loop to abort AND tear
+            // down the shared client handle. Either one alone leaves a
+            // window where the run keeps decoding in the background.
             if (isRunning) {
                 Log.i(TAG, "cancel requested — aborting run")
                 lastStatus = "Cancelling…"
@@ -80,6 +80,12 @@ class InferenceService : Service() {
                         .putExtra(EXTRA_LINE, "Cancelling…")
                 )
                 runJob?.cancel()
+                // runJob may be null (cancel raced finish) or already done;
+                // the native client is the thing that can keep decoding, so
+                // tear it down directly on both cancel and DONE paths.
+                scope.launch {
+                    runCatching { BackendCache.cancelAndDrop() }
+                }
             }
             return START_NOT_STICKY
         }

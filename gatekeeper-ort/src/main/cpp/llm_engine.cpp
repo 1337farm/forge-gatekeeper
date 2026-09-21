@@ -9,6 +9,7 @@
 
 #include <jni.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -28,6 +29,11 @@ std::unordered_map<int64_t, struct Engine*> g_engines;
 int64_t g_next_handle = 1;
 int g_live_count = 0;
 bool g_telemetry_killed = false;
+// Cooperative hard-cancel: set by nativeCancelGenerate(), polled inside the
+// decode loop. Per-engine flag would need an extra Lookup per step; a global
+// generation epoch is enough because only one run decodes at a time (the
+// engine npuMutex serializes pipeline calls).
+std::atomic<int> g_cancel_epoch{0};
 
 struct Engine {
   OgaConfig* config = nullptr;
@@ -271,7 +277,12 @@ Java_com_forgerig_gatekeeper_ort_LlmBridge_nativeGenerate(JNIEnv* env, jobject /
              OgaCreateTokenizerStream(engine->tokenizer, &stream));
 
     int generated = 0;
+    const int cancel_epoch = g_cancel_epoch.load();
     while (!OgaGenerator_IsDone(generator) && generated < cap) {
+      // Hard cancel: abort the decode loop promptly instead of riding out
+      // the full max_length. The Kotlin side throws CancellationException
+      // when it sees the canary below.
+      if (g_cancel_epoch.load() != cancel_epoch) break;
       CheckOga("OgaGenerator_GenerateNextToken", OgaGenerator_GenerateNextToken(generator));
 
       const int32_t* next = nullptr;
@@ -294,6 +305,11 @@ Java_com_forgerig_gatekeeper_ort_LlmBridge_nativeGenerate(JNIEnv* env, jobject /
 
     cleanup();
     if (env->ExceptionCheck()) return generated;
+    if (g_cancel_epoch.load() != cancel_epoch) {
+      ThrowJava(env, "java/util/concurrent/CancellationException",
+                "llm_engine generate: cancelled");
+      return generated;
+    }
     return generated;
   } catch (const std::exception& e) {
     cleanup();
@@ -323,6 +339,15 @@ Java_com_forgerig_gatekeeper_ort_LlmBridge_nativeRelease(JNIEnv* env, jobject /*
 
   std::lock_guard<std::mutex> lock(g_registry_mutex);
   if (g_live_count == 0) OgaShutdown();
+}
+
+// Signals any in-flight nativeGenerate to abort at its next decode step.
+// Cooperative but prompt: the loop polls the epoch every token (ms-scale),
+// so cancel lands in well under a second instead of riding out max_length.
+JNIEXPORT void JNICALL
+Java_com_forgerig_gatekeeper_ort_LlmBridge_nativeCancelGenerate(JNIEnv* env, jobject /*thiz*/) {
+  (void)env;
+  g_cancel_epoch.fetch_add(1);
 }
 
 // ---- QNN NPU offload (Snapdragon Hexagon) ----

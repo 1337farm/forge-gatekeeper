@@ -146,4 +146,12 @@ class MediaPipeLlmClient(
     override fun close() {
         if (llmRef.isInitialized()) runCatching { llmRef.value.close() }
     }
+
+    // Hard cancel: MediaPipe exposes no mid-decode abort, so cancel the
+    // in-flight session outright and force a clean rebuild on next acquire.
+    // Called on the cancel path before dropping the BackendCache handle.
+    suspend fun cancelGenerate() = withContext(Dispatchers.IO) {
+        if (llmRef.isInitialized()) runCatching { llmRef.value.close() }
+        lastWarmupMs = -1L
+    }
 }
