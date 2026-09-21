@@ -67,4 +67,17 @@ object BackendCache {
         client = null
         cacheKey = null
     }
+
+    // Hard-cancel path: signal the native decode loop to abort, then tear
+    // down the shared handle so neither a wedged loop nor a warm-but-busy
+    // client can keep the next run (or a ghost of this one) alive.
+    // Idempotent: cancel-then-finish and double-cancel both no-op safely.
+    suspend fun cancelAndDrop() {
+        val current = lock.withLock { client.also { client = null; cacheKey = null } }
+        when (current) {
+            is OrtGenAiClient -> runCatching { current.cancelGenerate() }
+            is MediaPipeLlmClient -> runCatching { current.cancelGenerate() }
+            else -> (current as? AutoCloseable)?.let { runCatching { it.close() } }
+        }
+    }
 }

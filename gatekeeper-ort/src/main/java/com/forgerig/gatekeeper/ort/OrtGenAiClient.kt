@@ -291,4 +291,18 @@ class OrtGenAiClient(
             runCatching { LlmBridge.nativeRelease(h) }
         }
     }
+
+    // Hard cancel: signal the native decode loop to abort at its next token
+    // (CancellationException surfaces through generate*), then drop the
+    // shared handle so a wedged loop can't keep the next run hostage. The
+    // next acquire() rebuilds cleanly via BackendCache.
+    suspend fun cancelGenerate() {
+        runCatching { LlmBridge.nativeCancelGenerate() }
+        val h = handle
+        if (h != 0L) {
+            handle = 0L
+            runCatching { LlmBridge.nativeRelease(h) }
+        }
+        lastWarmupMs = -1L
+    }
 }

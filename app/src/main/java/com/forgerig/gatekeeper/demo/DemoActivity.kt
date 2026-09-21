@@ -236,14 +236,28 @@ class DemoActivity : Activity() {
                                 val tail = text.takeLast(800)
                                 tail.substringAfter("\n", tail)
                             } else text
-                            val next = "Decoding $label…\n" + shown
-                            if (live.text.toString() != next) {
+                            // Raw decode snapshots carry no formatting — keep
+                            // them plain text. Attaching the header as a bold
+                            // span while the body stays raw preserves the
+                            // section look without HTML round-tripping, which
+                            // shreds model punctuation (<, >, &) into entities.
+                            val header = "Decoding $label…\n"
+                            val next = android.text.SpannableString(header + shown).apply {
+                                setSpan(
+                                    android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
+                                    0, header.length,
+                                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                                )
+                            }
+                            if (live.text.toString() != next.toString()) {
                                 // Suppress the section's layout transition for
                                 // per-token paints: height changes would
                                 // otherwise slide-down on every token.
+                                // BufferType.SPANNABLE: setTextIsSelectable +
+                                // spannable crashes on some OEM builds without it.
                                 val lt = body.layoutTransition
                                 body.layoutTransition = null
-                                live.text = next
+                                live.setText(next, TextView.BufferType.SPANNABLE)
                                 body.layoutTransition = lt
                             }
                             sectionStreamLen[key] = text.length
@@ -823,13 +837,17 @@ class DemoActivity : Activity() {
 
     // The single in-section live row per stage: decode streams and stage
     // status lines share it (last writer wins) until the finished card
-    // supersedes it.
+    // supersedes it. Body text matches the finished card bodies (13sp,
+    // regular) — only the "Decoding …" header is bold. Selectable, like
+    // every other body block in the app.
     private fun liveRow(key: String, body: LinearLayout): TextView =
         sectionLiveViews.getOrPut(key) {
             TextView(this).apply {
-                textSize = 12f
-                setTypeface(android.graphics.Typeface.MONOSPACE)
-                setTextColor(getColor(R.color.gatekeeper_muted))
+                textSize = 13f
+                setTextColor(getColor(R.color.gatekeeper_text))
+                setBackgroundResource(R.drawable.field_bg)
+                setPadding(dp(8), dp(8), dp(8), dp(8))
+                setTextIsSelectable(true)
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
