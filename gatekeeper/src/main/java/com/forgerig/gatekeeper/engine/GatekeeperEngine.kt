@@ -644,7 +644,11 @@ class GatekeeperEngine(
             s = s.substring(0, end)
         }
         s = s.replace("```json", "").replace("```", "").trim()
-        s = Regex("(?i)^(?:user_text|compressed_output|compressed|response|output|prompt\\s+to\\s+compress|original\\s+prompt\\s+to\\s+compress)\\s*(?:\\([^)]*\\))?\\s*:\\s*")
+        // Also covers "Compress prompt:" / "Compressed prompt (…):" — the
+        // model restating its framing (observed live: Compress prompt:
+        // "JavaScript array iteration loop"), which otherwise sails through
+        // audit into the final answer verbatim.
+        s = Regex("(?i)^(?:user_text|compressed_output|compressed|compress(?:ed)?\\s+prompt|response|output|prompt\\s+to\\s+compress|original\\s+prompt\\s+to\\s+compress)\\s*(?:\\([^)]*\\))?\\s*:\\s*")
             .replace(s, "")
         val lines = s.lines()
         val marker = Regex("(?i)^(?:example|examples|original|compressed|response|output)\\s*:")
