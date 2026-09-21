@@ -456,6 +456,20 @@ class GatekeeperEngineTest {
     }
 
     @Test
+    fun `cleanCandidate strips compress-prompt framing labels`() {
+        val engine = GatekeeperEngine(fakeInference { _, _, _ -> "" }, eligible())
+        assertEquals(
+            "JavaScript array iteration loop",
+            engine.cleanCandidate("Compress prompt: \"JavaScript array iteration loop\"")
+        )
+        assertEquals(
+            "do X now",
+            engine.cleanCandidate("Compressed prompt (short): do X now")
+        )
+        assertEquals("Compress me now.", engine.cleanCandidate("Compress me now."))
+    }
+
+    @Test
     fun `buildCompressionInput frames the prompt with markers`() {
         val engine = GatekeeperEngine(fakeInference { _, _, _ -> "" }, eligible())
         val first = engine.buildCompressionInput("please do X", "", null)

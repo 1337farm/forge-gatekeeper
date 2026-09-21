@@ -298,7 +298,11 @@ class DemoActivity : Activity() {
                         currentAnswer = answer.ifBlank { output }
                         statusView.text = status.ifBlank { statusView.text }
                         updateStatusBadge(statusBadge, ok, statusView.text.toString())
-                        outputView.text = output
+                        outputView.setText(
+                            Markdown.spannify(output, getColor(R.color.gatekeeper_bg)),
+                            TextView.BufferType.SPANNABLE
+                        )
+                        outputView.tag = output
                         answerPromptView.text = currentPrompt
                         telemetryView.text = intent.getStringExtra(InferenceService.EXTRA_TELEMETRY).orEmpty()
                         lastSteps = RunResultFormat.resolveAuditPlaceholders(
@@ -361,7 +365,7 @@ class DemoActivity : Activity() {
         copyButton.setOnClickListener {
             val status = statusView.text.toString()
             val prompt = answerPromptView.text.toString()
-            val output = outputView.text.toString()
+            val output = (outputView.tag as? String) ?: outputView.text.toString()
             val telemetry = telemetryView.text.toString()
             val debug = debugLogView.text.toString()
             val steps = stepsText()
@@ -408,6 +412,7 @@ class DemoActivity : Activity() {
             currentPrompt = raw
             currentAnswer = ""
             outputView.text = ""
+            outputView.tag = null
             answerPromptView.text = raw
             telemetryView.text = ""
             debugLogView.text = ""
@@ -564,7 +569,7 @@ class DemoActivity : Activity() {
         }
     }
 
-    private fun labeledBlock(parent: LinearLayout, label: String, value: String, accent: Int, mono: Boolean) {
+    private fun labeledBlock(parent: LinearLayout, label: String, value: String, accent: Int, mono: Boolean, markdown: Boolean = false) {
         if (value.isBlank()) return
         parent.addView(TextView(this).apply {
             text = label
@@ -577,10 +582,14 @@ class DemoActivity : Activity() {
             ).apply { topMargin = dp(8) }
         })
         parent.addView(TextView(this).apply {
-            text = value
             textSize = 13f
             setTextIsSelectable(true)
-            if (mono) setTypeface(android.graphics.Typeface.MONOSPACE)
+            if (markdown) {
+                setText(Markdown.spannify(value, getColor(R.color.gatekeeper_bg)), TextView.BufferType.SPANNABLE)
+            } else {
+                text = value
+            }
+            if (mono && !markdown) setTypeface(android.graphics.Typeface.MONOSPACE)
             setTextColor(getColor(R.color.gatekeeper_text))
             setBackgroundResource(R.drawable.field_bg)
             setPadding(dp(8), dp(8), dp(8), dp(8))
@@ -1204,7 +1213,7 @@ class DemoActivity : Activity() {
             val split = RunResultFormat.splitRequest(item.question)
             labeledBlock(qa, getString(R.string.label_system_prompt), split.system, getColor(R.color.gatekeeper_muted), true)
             labeledBlock(qa, getString(R.string.label_request), split.user, getColor(R.color.gatekeeper_mint), true)
-            labeledBlock(qa, getString(R.string.label_response), item.answer, getColor(R.color.gatekeeper_sky), true)
+            labeledBlock(qa, getString(R.string.label_response), item.answer, getColor(R.color.gatekeeper_sky), true, markdown = true)
             row.addView(qa)
             row.setOnClickListener {
                 // Opening the inner card is meaningless inside a collapsed
@@ -1319,7 +1328,13 @@ class DemoActivity : Activity() {
             currentPrompt = InferenceService.lastPrompt.ifBlank { currentPrompt }
             currentAnswer = InferenceService.lastAnswer.ifBlank { InferenceService.lastOutput }
             findViewById<TextView>(R.id.answerPromptView).text = currentPrompt
-            findViewById<TextView>(R.id.outputView).text = InferenceService.lastOutput
+            findViewById<TextView>(R.id.outputView).apply {
+                setText(
+                    Markdown.spannify(InferenceService.lastOutput, getColor(R.color.gatekeeper_bg)),
+                    TextView.BufferType.SPANNABLE
+                )
+                tag = InferenceService.lastOutput
+            }
             findViewById<TextView>(R.id.telemetryView).text = InferenceService.lastTelemetry
             findViewById<TextView>(R.id.debugLogView).text = InferenceService.lastDebug
             updateStatusBadge(findViewById(R.id.statusBadge), null, InferenceService.lastStatus)
