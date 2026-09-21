@@ -12,6 +12,7 @@ import android.os.PowerManager
 import android.util.Log
 import com.forgerig.gatekeeper.engine.GatekeeperEngine
 import com.forgerig.gatekeeper.engine.HardwareEvaluator
+import com.forgerig.gatekeeper.engine.TokenEstimator
 import com.forgerig.gatekeeper.hardware.HardwareCapabilityEngine
 import com.forgerig.gatekeeper.model.GatekeeperConfig
 import com.forgerig.gatekeeper.model.GatekeeperResult
@@ -106,6 +107,7 @@ class InferenceService : Service() {
         val forceAll = intent.getBooleanExtra(EXTRA_FORCE_ALL, false)
         val provider = intent.getStringExtra(EXTRA_PROVIDER) ?: PROVIDER_XNNPACK
         val microOp = intent.getBooleanExtra(EXTRA_MICRO_OP, false)
+        val answerLocal = intent.getBooleanExtra(EXTRA_ANSWER_LOCAL, true)
         if (prompt.isBlank()) return START_NOT_STICKY
         acquireWakeLock()
         isRunning = true
@@ -118,7 +120,7 @@ class InferenceService : Service() {
         lastSteps = ArrayList()
         lastProgressLines = ArrayList()
         lastQa = HashMap()
-        runInference(prompt, bypass, forceAll, provider, microOp)
+        runInference(prompt, bypass, forceAll, provider, microOp, answerLocal)
         return START_NOT_STICKY
     }
 
@@ -194,7 +196,7 @@ class InferenceService : Service() {
         heartbeatJob = null
     }
 
-    private fun runInference(prompt: String, bypass: Boolean, forceAll: Boolean, provider: String, microOp: Boolean) {
+    private fun runInference(prompt: String, bypass: Boolean, forceAll: Boolean, provider: String, microOp: Boolean, answerLocal: Boolean) {
         runJob?.cancel()
         runJob = scope.launch {
             val nm = getSystemService(NotificationManager::class.java)
@@ -214,7 +216,7 @@ class InferenceService : Service() {
                 // back (XNNPACK first: it is the default path, so leg 1 often
                 // starts warm). MediaPipe has no provider choice: single run.
                 if (provider == PROVIDER_BOTH && isOrt && !bypass) {
-                    runBenchmark(prompt, forceAll, model, nm, id, monitor, microOp)
+                    runBenchmark(prompt, forceAll, model, nm, id, monitor, microOp, answerLocal)
                     return@launch
                 }
                 val useXnnpack = provider != PROVIDER_CPU
@@ -247,7 +249,7 @@ class InferenceService : Service() {
                     }
                 } else {
                     val leg = executePipeline(
-                        prompt, model, useXnnpack, forceAll, mode, nm, id, microOp,
+                        prompt, model, useXnnpack, forceAll, mode, nm, id, microOp, answerLocal,
                         stopSampling = { monitor.stop()?.summaryLine() }
                     )
                     finish(nm, id, leg.answer == null || !leg.answer.startsWith("Answer failed:"), leg.status, leg.output, leg.telemetry, leg.steps, prompt = prompt, answer = leg.answer ?: leg.output)
@@ -277,6 +279,7 @@ class InferenceService : Service() {
         nm: NotificationManager,
         id: Int,
         microOp: Boolean,
+        answerLocal: Boolean,
         stopSampling: suspend () -> String?
     ): LegResult {
         debugTag = if (mode.contains("CPU")) "cpu" else if (mode.contains("XNNPACK")) "xnnpack" else ""
@@ -349,33 +352,46 @@ class InferenceService : Service() {
             }
         )
         val resourceLine = stopSampling()
-        // SUCCESS answers the safe prompt so the output shows a
-        // real LLM reply, not just the sanitized echo. Blocked /
-        // fallback stay answer-free by design. The answer streams live
-        // like every other stage when the backend supports it.
-        val answer = if (result is GatekeeperResult.Success) {
+        // The answer runs the pipeline's compressed prompt through the
+        // actual local LLM so the demo shows a real reply, streaming live
+        // like every other stage when the backend supports it. Blocked
+        // (malicious) stays answer-free by design; on fallback the answer
+        // toggle decides whether the sanitized prompt still gets a reply.
+        val answerPrompt: String? = when {
+            result is GatekeeperResult.Success -> result.safeCompressedPrompt
+            result is GatekeeperResult.FallbackRequired && answerLocal -> result.sanitizedPrompt
+            else -> null
+        }
+        var answerTokens: Pair<Int, Int>? = null
+        val answer = if (answerPrompt != null) {
             publish("$mode Answering…", nm, id)
             runCatching {
                 val streaming = client as? com.forgerig.gatekeeper.engine.StreamingInferenceClient
                 if (streaming != null) {
-                    streaming.generateStreaming("", result.safeCompressedPrompt) { partial ->
+                    val gen = streaming.generateStreaming("", answerPrompt) { partial ->
                         emitTokenThrottled("answer", partial)
-                    }.text
-                } else client.generate("", result.safeCompressedPrompt)
+                    }
+                    answerTokens = TokenEstimator.count(answerPrompt) to gen.completionTokens
+                    gen.text
+                } else {
+                    val text = client.generate("", answerPrompt)
+                    answerTokens = TokenEstimator.count(answerPrompt) to text.length / 4
+                    text
+                }
             }.getOrElse { "Answer failed: ${it.message}" }
         } else null
-        if (result is GatekeeperResult.Success && answer != null && !answer.startsWith("Answer failed:")) {
-            lastQa["answer"] = RunResultFormat.encodeQa(result.safeCompressedPrompt, answer)
+        if (answerPrompt != null && answer != null && !answer.startsWith("Answer failed:")) {
+            lastQa["answer"] = RunResultFormat.encodeQa(answerPrompt, answer)
             sendBroadcast(
                 Intent(ACTION_INFER_QA)
                     .setPackage(packageName)
                     .putExtra(EXTRA_QA_LABEL, "answer")
-                    .putExtra(EXTRA_QA_QUESTION, result.safeCompressedPrompt)
+                    .putExtra(EXTRA_QA_QUESTION, answerPrompt)
                     .putExtra(EXTRA_QA_ANSWER, answer)
             )
         }
         val (status, output, telemetry) =
-            RunResultFormat.format(result, mode, resourceLine, answer)
+            RunResultFormat.format(result, mode, resourceLine, answer, answerTokens)
         val resultTelemetry = when (result) {
             is GatekeeperResult.Success -> result.telemetry
             is GatekeeperResult.Blocked -> result.telemetry
@@ -400,14 +416,15 @@ class InferenceService : Service() {
         nm: NotificationManager,
         id: Int,
         monitor: ResourceMonitor,
-        microOp: Boolean
+        microOp: Boolean,
+        answerLocal: Boolean
     ) {
         val xnn = executePipeline(
-            prompt, model, true, forceAll, "[ORT XNNPACK] ", nm, id, microOp,
+            prompt, model, true, forceAll, "[ORT XNNPACK] ", nm, id, microOp, answerLocal,
             stopSampling = { null }
         )
         val cpu = executePipeline(
-            prompt, model, false, forceAll, "[ORT CPU] ", nm, id, microOp,
+            prompt, model, false, forceAll, "[ORT CPU] ", nm, id, microOp, answerLocal,
             stopSampling = { null }
         )
         val res = monitor.stop()
@@ -556,6 +573,7 @@ class InferenceService : Service() {
         const val EXTRA_BYPASS = "bypass"
         const val EXTRA_FORCE_ALL = "force_all"
         const val EXTRA_MICRO_OP = "micro_op"
+        const val EXTRA_ANSWER_LOCAL = "answer_local"
         const val EXTRA_PROVIDER = "provider"
         const val EXTRA_LINE = "line"
         const val EXTRA_OK = "ok"
@@ -615,7 +633,7 @@ class InferenceService : Service() {
         var lastQa: HashMap<String, String> = HashMap()
             private set
 
-        fun startRun(context: Context, prompt: String, bypass: Boolean, forceAll: Boolean, provider: String, microOp: Boolean) {
+        fun startRun(context: Context, prompt: String, bypass: Boolean, forceAll: Boolean, provider: String, microOp: Boolean, answerLocal: Boolean = true) {
             context.startForegroundService(
                 Intent(context, InferenceService::class.java)
                     .setAction(ACTION_RUN)
@@ -623,6 +641,7 @@ class InferenceService : Service() {
                     .putExtra(EXTRA_BYPASS, bypass)
                     .putExtra(EXTRA_FORCE_ALL, forceAll)
                     .putExtra(EXTRA_MICRO_OP, microOp)
+                    .putExtra(EXTRA_ANSWER_LOCAL, answerLocal)
                     .putExtra(EXTRA_PROVIDER, provider)
             )
         }

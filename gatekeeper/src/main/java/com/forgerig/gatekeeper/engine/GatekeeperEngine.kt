@@ -34,6 +34,10 @@ class GatekeeperEngine(
     private val npuMutex = Mutex()
     private val tag = "ForgeGatekeeper"
 
+    // One LLM call's spend, shared by the staged (timeInfer) and guarded
+    // (Stage A) inference paths so every step record carries its own cost.
+    data class InferOut(val text: String, val promptTokens: Int, val completionTokens: Int)
+
     private fun clip(s: String, n: Int): String =
         if (s.length <= n) s else s.take(n) + "…<${s.length - n} more chars>"
 
@@ -89,10 +93,14 @@ class GatekeeperEngine(
         fun elapsed(): String = "%.1fs".format((System.currentTimeMillis() - t0) / 1000.0)
         val records = mutableListOf<StepExecutionRecord>()
         val skipped = LinkedHashMap<String, String>()
+        // Last LLM call's token spend, attached to the step record that
+        // owns the call (stage A / compress / audit).
+        var lastCallIn = 0
+        var lastCallOut = 0
         val redactionEvents = mutableListOf<String>()
         var order = 0
-        fun rec(step: GatekeeperStep, status: StepStatus, reason: String = "", it: Int = 0, d: Long = 0) {
-            records.add(StepExecutionRecord(order++, step, status, reason, it, d))
+        fun rec(step: GatekeeperStep, status: StepStatus, reason: String = "", it: Int = 0, d: Long = 0, inTok: Int = 0, outTok: Int = 0) {
+            records.add(StepExecutionRecord(order++, step, status, reason, it, d, inTok, outTok))
         }
         val breaker = breakerFor(config.circuitFailureThreshold, config.circuitCooldownMs)
         // Stage wording comes from the configured prompt set (LABELED vs
@@ -133,7 +141,9 @@ class GatekeeperEngine(
                 fallbackReason = fallback,
                 maxRetriesExhausted = maxEx,
                 expansionGuardFailed = expansionGuardFailed,
-                totalDurationMs = System.currentTimeMillis() - t0
+                totalDurationMs = System.currentTimeMillis() - t0,
+                totalPromptTokens = records.sumOf { it.promptTokens },
+                totalCompletionTokens = records.sumOf { it.completionTokens }
             )
         }
 
@@ -172,8 +182,10 @@ class GatekeeperEngine(
         val s3 = System.currentTimeMillis()
         onProgress("Stage A security eval: querying LLM…")
         val stageA: StageAPayload = try {
-            val raw = guardedInference(prompts.security, sanitized, config, breaker, "stageA", onLlmEvent, onToken)
-            parseStageA(extractJson(raw))
+            val out = guardedInference(prompts.security, sanitized, config, breaker, "stageA", onLlmEvent, onToken)
+            lastCallIn = out.promptTokens
+            lastCallOut = out.completionTokens
+            parseStageA(extractJson(out.text))
         } catch (e: TimeoutCancellationException) {
             breaker.recordFailure()
             rec(GatekeeperStep.STAGE_A_SECURITY_EVAL, StepStatus.FAILED, "inference timeout")
@@ -224,11 +236,12 @@ class GatekeeperEngine(
             GatekeeperStep.STAGE_A_SECURITY_EVAL, StepStatus.EXECUTED,
             "heat=$heat injection=$injection completeness=${stageA.completeness}" +
                 (if (missingContext) " (advisory: ${stageA.missing_context}".take(500) + ")" else ""),
-            0, System.currentTimeMillis() - s3
+            0, System.currentTimeMillis() - s3,
+            lastCallIn, lastCallOut
         )
         onProgress(
             "Stage A ✓ heat=$heat injection=$injection completeness=${stageA.completeness}" +
-                (if (missingContext) " (advisory)" else "") + " (${elapsed()})"
+                (if (missingContext) " (advisory)" else "") + " tok ${lastCallIn}→${lastCallOut} (${elapsed()})"
         )
 
         if (injection == InjectionVerdict.MALICIOUS) {
@@ -312,6 +325,8 @@ class GatekeeperEngine(
         var inferCalls = 0
         var inferMs = 0L
         var inferTokens = 0
+        // Last LLM call's token spend, attached to the step record that
+        // owns the call (compress / audit / stage A).
 
         // Suspend — never runBlocking: processPrompt runs on the caller's
         // scope (Main in the demo), so blocking here would freeze the UI
@@ -321,12 +336,17 @@ class GatekeeperEngine(
         // the payload is already logged verbatim by the previous step
         // (marked with ↳ instead of reprinting). Only scrubbed/derived
         // text is ever logged — never the raw prompt.
+        // Every LLM call reports what it spent: prompt tokens are estimated
+        // from payload chars (same heuristic as TokenEstimator), completion
+        // tokens come from the timed backend or the same estimate. Callers
+        // attach the pair to their step record so each stage shows its own
+        // cost and the ledger totals the run.
         suspend fun timeInfer(
             label: String,
             systemPrompt: String,
             userContent: String,
             logUser: String = userContent
-        ): String {
+        ): InferOut {
             val start = System.currentTimeMillis()
             logLong("$label request system=${clip(systemPrompt, 300)}\nuser:\n$logUser")
             // Full payload goes to the callback (in-app step rows) as well.
@@ -339,12 +359,14 @@ class GatekeeperEngine(
                 (inference as TimedInferenceClient).generateTimed(systemPrompt, userContent)
             } else null
             val text = timed?.text ?: inference.generate(systemPrompt, userContent)
+            val promptTokens = TokenEstimator.count(systemPrompt) + TokenEstimator.count(userContent)
+            val completionTokens = timed?.completionTokens ?: (text.length / 4)
             inferCalls++
             inferMs += timed?.generationMs ?: (System.currentTimeMillis() - start)
-            inferTokens += timed?.completionTokens ?: (text.length / 4)
+            inferTokens += completionTokens
             logLong("$label response (${text.length} chars):\n$text")
             onLlmEvent(label, "response", text)
-            return text
+            return InferOut(text, promptTokens, completionTokens)
         }
 
         fun tpsLine(): String {
@@ -373,15 +395,16 @@ class GatekeeperEngine(
             val sc = System.currentTimeMillis()
             onProgress("Compress iter ${compIt + 1}: querying LLM…")
             try {
-                candidate = cleanCandidate(
-                    timeInfer(
-                        "compress#${compIt + 1}",
-                        prompts.compression,
-                        buildCompressionInput(working, corrective, previousFailed)
-                    ).trim()
+                val out = timeInfer(
+                    "compress#${compIt + 1}",
+                    prompts.compression,
+                    buildCompressionInput(working, corrective, previousFailed)
                 )
+                candidate = cleanCandidate(out.text.trim())
                 compIt++
                 val candTokens = TokenEstimator.count(candidate)
+                lastCallIn = out.promptTokens
+                lastCallOut = out.completionTokens
                 // Deterministic backstop for small-model scaffolding: a real
                 // compression never balloons past ~3x (or +40 tokens slack
                 // for tiny inputs). Without this, hallucinated explanations
@@ -427,9 +450,10 @@ class GatekeeperEngine(
                 rec(
                     GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION,
                     if (compIt > 1) StepStatus.RETRIED else StepStatus.EXECUTED,
-                    "iter=$compIt in=${workingTokens} out=$candTokens ${tpsLine()}", compIt, System.currentTimeMillis() - sc
+                    "iter=$compIt in=${workingTokens} out=$candTokens ${tpsLine()}", compIt, System.currentTimeMillis() - sc,
+                    lastCallIn, lastCallOut
                 )
-                onProgress("Compress ✓ iter=$compIt in=${workingTokens} out=$candTokens ${tpsLine()} (${elapsed()})")
+                onProgress("Compress ✓ iter=$compIt in=${workingTokens} out=$candTokens tok ${lastCallIn}→${lastCallOut} ${tpsLine()} (${elapsed()})")
             } catch (e: TimeoutCancellationException) {
                 breaker.recordFailure()
                 rec(GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION, StepStatus.FAILED, "inference timeout iter=$compIt")
@@ -463,7 +487,7 @@ class GatekeeperEngine(
             val sd = System.currentTimeMillis()
             onProgress("Audit iter ${audIt + 1}: querying LLM…")
             val audit: AccuracyAuditResult = try {
-                val raw = timeInfer(
+                val out = timeInfer(
                     "audit#${audIt + 1}",
                     prompts.audit,
                     "ORIGINAL:\n$working\n\nCOMPRESSED:\n$candidate",
@@ -473,7 +497,9 @@ class GatekeeperEngine(
                         "↳ compress iter $compIt output (logged above, fed in full)"
                 )
                 audIt++
-                parseAudit(raw)
+                lastCallIn = out.promptTokens
+                lastCallOut = out.completionTokens
+                parseAudit(out.text)
             } catch (e: TimeoutCancellationException) {
                 breaker.recordFailure()
                 rec(GatekeeperStep.STAGE_D_ACCURACY_AUDIT, StepStatus.FAILED, "inference timeout")
@@ -498,7 +524,8 @@ class GatekeeperEngine(
                 is AccuracyAuditResult.Match -> {
                     rec(
                         GatekeeperStep.STAGE_D_ACCURACY_AUDIT, StepStatus.EXECUTED,
-                        "MATCH drift=${audit.driftScore} ${tpsLine()}", audIt, System.currentTimeMillis() - sd
+                        "MATCH drift=${audit.driftScore} ${tpsLine()}", audIt, System.currentTimeMillis() - sd,
+                        lastCallIn, lastCallOut
                     )
                     breaker.recordSuccess()
                     val post = TokenEstimator.count(candidate)
@@ -520,7 +547,8 @@ class GatekeeperEngine(
                     rec(
                         GatekeeperStep.STAGE_D_ACCURACY_AUDIT, StepStatus.RETRIED,
                         "MISMATCH drift=${audit.driftScore} dropped=${audit.droppedConstraints}",
-                        audIt, System.currentTimeMillis() - sd
+                        audIt, System.currentTimeMillis() - sd,
+                        lastCallIn, lastCallOut
                     )
                     previousFailed = candidate
                     corrective = audit.correctiveFeedback
@@ -547,7 +575,7 @@ class GatekeeperEngine(
         label: String = "infer",
         onLlmEvent: (label: String, direction: String, text: String) -> Unit = { _, _, _ -> },
         onToken: (label: String, cumulative: String) -> Unit = { _, _ -> }
-    ): String {
+    ): InferOut {
         // Track lock ownership locally: isLocked can report another
         // coroutine's hold, so only the holder may unlock.
         var lockHeld = false
@@ -564,12 +592,15 @@ class GatekeeperEngine(
             logLong("$label request system=${clip(systemPrompt, 300)}\nuser:\n$userContent")
             onLlmEvent(label, "request", "system:\n$systemPrompt\nuser:\n$userContent")
             val out = withTimeout(config.npuExecutionTimeoutMs) {
-                (inference as? StreamingInferenceClient)?.generateStreaming(systemPrompt, userContent) { partial ->
+                val timed = (inference as? StreamingInferenceClient)?.generateStreaming(systemPrompt, userContent) { partial ->
                     onToken(label, partial)
-                }?.text ?: inference.generate(systemPrompt, userContent)
+                }
+                val text = timed?.text ?: inference.generate(systemPrompt, userContent)
+                val completion = timed?.completionTokens ?: (text.length / 4)
+                InferOut(text, TokenEstimator.count(systemPrompt) + TokenEstimator.count(userContent), completion)
             }
-            logLong("$label response (${out.length} chars):\n$out")
-            onLlmEvent(label, "response", out)
+            logLong("$label response (${out.text.length} chars):\n${out.text}")
+            onLlmEvent(label, "response", out.text)
             return out
         } catch (e: TimeoutCancellationException) {
             breaker.recordFailure()

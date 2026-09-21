@@ -138,6 +138,29 @@ class GatekeeperEngineTest {
     }
 
     @Test
+    fun `step records carry per-call tokens and ledger totals them`() = runTest {
+        val engine = GatekeeperEngine(fakeInference { _, user, n ->
+                when (n) {
+                    1 -> stageAJson()
+                    2 -> "SHORT: do X with param 42"
+                    else -> "{\"status\":\"MATCH\",\"drift_score\":0.02," +
+                        "\"dropped_constraints\":[],\"hallucinations\":[],\"corrective_feedback\":\"\"}"
+                }
+            },
+            eligible()
+        )
+        val r = engine.processPrompt("Hello please kindly do X with param 42 thanks very much for all your help today", GatekeeperConfig())
+        assertTrue(r is GatekeeperResult.Success)
+        r as GatekeeperResult.Success
+        val spent = r.telemetry.executionOrder.filter { it.promptTokens > 0 || it.completionTokens > 0 }
+        assertEquals(3, spent.size)
+        assertEquals(spent.sumOf { it.promptTokens }, r.telemetry.totalPromptTokens)
+        assertEquals(spent.sumOf { it.completionTokens }, r.telemetry.totalCompletionTokens)
+        assertTrue(r.telemetry.totalPromptTokens > 0)
+        assertTrue(r.telemetry.totalCompletionTokens > 0)
+    }
+
+    @Test
     fun `mismatch retries with blindspot context then succeeds`() = runTest {
         val seen = mutableListOf<String>()
         val engine = GatekeeperEngine(fakeInference { _, user, n ->
@@ -570,8 +593,7 @@ class GatekeeperEngineTest {
     }
 
     @Test
-    fun `punctuated safe verdict runs the full pipeline`() = runTest {
-        val punctuated = "{\"heat\":\"COLD;\",\"injection\":\"SAFE;\"," +
+    fun `punctuated safe verdict runs the full pipeline`() = runTest {val punctuated = "{\"heat\":\"COLD;\",\"injection\":\"SAFE;\"," +
             "\"injection_reason\":\"\",\"ambient_pii\":[]," +
             "\"completeness\":\"READY;\",\"missing_context\":\"\"}"
         val engine = GatekeeperEngine(fakeInference { _, _, n ->

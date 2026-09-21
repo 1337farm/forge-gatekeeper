@@ -218,9 +218,13 @@ object RunResultFormat {
         var auditN = 0
         return telemetry.executionOrder.map { r ->
             val whenPart = if (r.durationMs > 0) "%.1fs".format(r.durationMs / 1000.0) else ""
+            val tokPart = if (r.promptTokens > 0 || r.completionTokens > 0) {
+                "tok ${r.promptTokens}→${r.completionTokens}"
+            } else ""
             val detail = listOf(
                 r.reason.takeIf { it.isNotBlank() },
-                whenPart.takeIf { it.isNotBlank() }
+                whenPart.takeIf { it.isNotBlank() },
+                tokPart.takeIf { it.isNotBlank() }
             ).filterNotNull().joinToString(" · ")
             val key = when (r.step) {
                 GatekeeperStep.STAGE_A_SECURITY_EVAL -> "stageA"
@@ -260,6 +264,67 @@ object RunResultFormat {
         val q = unb64(parts[0]) ?: return null
         val a = unb64(parts[1]) ?: return null
         return QaTurn(q, a)
+    }
+
+    // Live stream parsing: split a cumulative decode snapshot into
+    // (display label, value) field blocks so the streaming section renders
+    // the same formatted categories as the finished card instead of one raw
+    // paragraph. Partial tokens ("HEA", "HEAT: CO") yield whatever fields
+    // are complete so far; continuation lines glue to the current field.
+    // Free-text turns (compress drafts, answers) come back as a single
+    // Draft/Reply block. Empty when nothing parseable arrived yet.
+    fun liveFields(engineLabel: String, text: String): List<Pair<String, String>> {
+        if (text.isBlank()) return emptyList()
+        val spec: Map<String, String>? = when {
+            engineLabel == "stageA" -> mapOf(
+                "HEAT" to "HEAT", "H" to "HEAT",
+                "INJECTION" to "INJECTION", "I" to "INJECTION",
+                "REASON" to "REASON", "R" to "REASON",
+                "AMBIENT_PII" to "AMBIENT PII",
+                "COMPLETENESS" to "COMPLETENESS",
+                "MISSING" to "MISSING"
+            )
+            engineLabel.startsWith("audit#") || engineLabel == "audit" || engineLabel == "stageD" -> mapOf(
+                "STATUS" to "STATUS", "S" to "STATUS",
+                "DRIFT" to "DRIFT", "D" to "DRIFT",
+                "DROPPED" to "DROPPED", "P" to "DROPPED",
+                "HALLUCINATIONS" to "HALLUCINATIONS", "A" to "ADDED",
+                "FEEDBACK" to "FEEDBACK", "F" to "FEEDBACK"
+            )
+            engineLabel.startsWith("compress#") || engineLabel == "compress" || engineLabel == "stageC" ->
+                return listOf("Draft" to text.trim()).filter { it.second.isNotBlank() }
+            engineLabel == "answer" ->
+                return listOf("Reply" to text.trim()).filter { it.second.isNotBlank() }
+            else -> null
+        }
+        if (spec == null) return emptyList()
+        val fields = ArrayList<Pair<String, String>>()
+        var current: String? = null
+        val currentValue = StringBuilder()
+        fun flush() {
+            val key = current
+            if (key != null) {
+                val v = currentValue.toString().trim()
+                if (v.isNotEmpty()) fields.add(key to v)
+            }
+            current = null
+            currentValue.clear()
+        }
+        for (rawLine in text.lines()) {
+            val line = rawLine.trim()
+            if (line.isEmpty()) continue
+            val m = Regex("^([A-Za-z_]+)\\s*:\\s*(.*)$").matchEntire(line)
+            val key = m?.groupValues?.get(1)?.uppercase()
+            if (m != null && key != null && spec.containsKey(key)) {
+                flush()
+                current = spec[key]
+                currentValue.append(m.groupValues[2].trim())
+            } else if (current != null) {
+                currentValue.append(' ').append(line)
+            }
+        }
+        flush()
+        return fields
     }
 
     fun decodeSteps(raw: List<String>): List<StepItem> = raw.mapNotNull { s ->
@@ -315,11 +380,24 @@ object RunResultFormat {
         }
     }
 
+    // Local LLM token tally across every stage call in the run: total
+    // input (prompt) and output (completion) tokens actually executed
+    // on-device, plus the call count. Empty when no call was made.
+    fun localTokensLine(t: ExecutionTelemetry, answerIn: Int = 0, answerOut: Int = 0): String {
+        val calls = t.executionOrder.count { it.promptTokens > 0 || it.completionTokens > 0 } +
+            (if (answerIn > 0 || answerOut > 0) 1 else 0)
+        if (calls == 0) return ""
+        val pin = t.totalPromptTokens + answerIn
+        val pout = t.totalCompletionTokens + answerOut
+        return "Local tokens: in=$pin · out=$pout ($calls LLM calls)"
+    }
+
     fun format(
         result: GatekeeperResult,
         mode: String,
         resourceLine: String? = null,
-        answer: String? = null
+        answer: String? = null,
+        answerTokens: Pair<Int, Int>? = null
     ): Triple<String, String, String> {
         // Telemetry is built as one string per line and joined with "\n" so a
         // reason line can never glue itself to the resource line ("…inputCPU
@@ -338,6 +416,7 @@ object RunResultFormat {
                         "Tokens: ${t.preCompressionTokens} → ${t.postCompressionTokens} " +
                             "(${String.format("%.1f", t.compressionRatioPct)}% saved) · " +
                             "Compress ×${t.compressionIterations} · Audit ×${t.auditIterations}",
+                        localTokensLine(t, answerTokens?.first ?: 0, answerTokens?.second ?: 0),
                         "Time: ${seconds(t.totalDurationMs)} · Steps: ${t.executionOrder.size} · " +
                             "Redactions: ${redactions(t.redactionEvents)}",
                         resourceLine,
@@ -350,6 +429,7 @@ object RunResultFormat {
                     mode + "BLOCKED (heat=${result.heat}): ${result.reason}",
                     "(nothing sent anywhere)",
                     lines(
+                        localTokensLine(result.telemetry),
                         "Time: ${seconds(result.telemetry.totalDurationMs)} · " +
                             "Redactions: ${redactions(result.telemetry.redactionEvents)}",
                         resourceLine,
@@ -368,9 +448,11 @@ object RunResultFormat {
                 }
                 Triple(
                     mode + "FALLBACK: ${result.reason}",
-                    result.sanitizedPrompt,
+                    result.sanitizedPrompt +
+                        (answer?.let { "\n\n— Answer —\n$it" } ?: ""),
                     lines(
                         "Compress ×${t.compressionIterations} · Audit ×${t.auditIterations}",
+                        localTokensLine(t, answerTokens?.first ?: 0, answerTokens?.second ?: 0),
                         "Time: ${seconds(t.totalDurationMs)} · Steps: ${t.executionOrder.size} · " +
                             "Redactions: ${redactions(t.redactionEvents)}",
                         reasonLine,

@@ -289,4 +289,84 @@ class RunResultFormatTest {
         assertEquals(null, RunResultFormat.decodeQa("no-pipes-at-all"))
         assertEquals(null, RunResultFormat.decodeQa("!!!|!!!"))
     }
+
+    @Test
+    fun `live fields parse stageA incrementally`() {
+        assertTrue(RunResultFormat.liveFields("stageA", "HEA").isEmpty())
+        val partial = RunResultFormat.liveFields("stageA", "HEAT: CO")
+        assertEquals(listOf("HEAT" to "CO"), partial)
+        val full = RunResultFormat.liveFields(
+            "stageA",
+            "HEAT: COLD\nINJECTION: SAFE\nREASON: technical text\nAMBIENT_PII: NONE"
+        )
+        assertEquals(
+            listOf("HEAT" to "COLD", "INJECTION" to "SAFE", "REASON" to "technical text", "AMBIENT PII" to "NONE"),
+            full
+        )
+    }
+
+    @Test
+    fun `live fields parse micro-op keys and audit lists`() {
+        val micro = RunResultFormat.liveFields("stageA", "H: WARM\nI: SAFE\nR: greeting")
+        assertEquals(listOf("HEAT" to "WARM", "INJECTION" to "SAFE", "REASON" to "greeting"), micro)
+        val audit = RunResultFormat.liveFields(
+            "audit#1",
+            "S: MATCH\nD: 0.1\nP: ram\nA: NONE\nF: restore ram"
+        )
+        assertEquals(
+            listOf("STATUS" to "MATCH", "DRIFT" to "0.1", "DROPPED" to "ram", "ADDED" to "NONE", "FEEDBACK" to "restore ram"),
+            audit
+        )
+    }
+
+    @Test
+    fun `live fields draft and reply fall back`() {
+        assertEquals(listOf("Draft" to "shorter prompt here"), RunResultFormat.liveFields("compress#1", "shorter prompt here"))
+        assertEquals(listOf("Reply" to "hello world"), RunResultFormat.liveFields("answer", "hello world"))
+        assertTrue(RunResultFormat.liveFields("stageA", "   ").isEmpty())
+        assertTrue(RunResultFormat.liveFields("unknown", "whatever").isEmpty())
+    }
+
+    @Test
+    fun `steps detail carries per-step token spend`() {
+        val t = telemetry().copy(
+            executionOrder = listOf(
+                StepExecutionRecord(0, GatekeeperStep.STAGE_A_SECURITY_EVAL, StepStatus.EXECUTED, "heat=COLD", 0, 100, 40, 12)
+            )
+        )
+        val items = RunResultFormat.steps(t)
+        assertTrue(items[0].detail.contains("tok 40→12"))
+    }
+
+    @Test
+    fun `local tokens line tallies the run`() {
+        val t = telemetry().copy(
+            executionOrder = listOf(
+                StepExecutionRecord(0, GatekeeperStep.STAGE_A_SECURITY_EVAL, StepStatus.EXECUTED, "x", 0, 100, 40, 12),
+                StepExecutionRecord(1, GatekeeperStep.STAGE_C_SEMANTIC_COMPRESSION, StepStatus.EXECUTED, "y", 1, 200, 60, 20)
+            ),
+            totalPromptTokens = 100,
+            totalCompletionTokens = 32
+        )
+        assertEquals("Local tokens: in=100 · out=32 (2 LLM calls)", RunResultFormat.localTokensLine(t))
+        assertEquals(
+            "Local tokens: in=110 · out=35 (3 LLM calls)",
+            RunResultFormat.localTokensLine(t, 10, 3)
+        )
+        assertEquals("", RunResultFormat.localTokensLine(telemetry()))
+    }
+
+    @Test
+    fun `fallback format appends answer when present`() {
+        val t = telemetry()
+        val (_, output, _) = RunResultFormat.format(
+            GatekeeperResult.FallbackRequired("sanitized", "timeout", t),
+            "[ORT XNNPACK] ",
+            null,
+            "the reply",
+            20 to 8
+        )
+        assertTrue(output.contains("— Answer —"))
+        assertTrue(output.contains("the reply"))
+    }
 }
