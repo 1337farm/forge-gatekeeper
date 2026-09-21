@@ -43,7 +43,9 @@ class DemoActivity : Activity() {
     private var currentAnswer = ""
     // Live per-section decode rows ("Compress" -> its streaming TextView).
     // Removed when the stage's finished card lands; cleared on re-render.
-    private val sectionLiveViews = LinkedHashMap<String, TextView>()
+    private val sectionLiveViews = LinkedHashMap<String, LinearLayout>()
+    private val sectionLiveFieldViews = LinkedHashMap<String, LinkedHashMap<String, TextView>>()
+    private val sectionLiveStatus = LinkedHashMap<String, TextView>()
     // "Waiting for stage…" placeholders in pre-created shells, removed as
     // soon as a section shows real content (live stream or finished card).
     private val sectionPlaceholders = LinkedHashMap<String, View>()
@@ -118,6 +120,8 @@ class DemoActivity : Activity() {
         val bypassSwitch = findViewById<Switch>(R.id.bypassGatekeeper)
         val forceAllSwitch = findViewById<Switch>(R.id.forceAllSteps)
         val promptSetSwitch = findViewById<Switch>(R.id.promptSetSwitch)
+        val answerLocalSwitch = findViewById<Switch>(R.id.answerLocalSwitch)
+        answerLocalSwitch.isChecked = true
         val modelUrl = findViewById<EditText>(R.id.modelUrl)
         val hfToken = findViewById<EditText>(R.id.hfToken)
         val downloadButton = findViewById<Button>(R.id.downloadButton)
@@ -156,6 +160,8 @@ class DemoActivity : Activity() {
             forceAllSwitch.isEnabled = !bypassed
             promptSetSwitch.visibility = if (bypassed) View.GONE else View.VISIBLE
             promptSetSwitch.isEnabled = !bypassed
+            answerLocalSwitch.visibility = if (bypassed) View.GONE else View.VISIBLE
+            answerLocalSwitch.isEnabled = !bypassed
         }
         syncForceSwitch()
         bypassSwitch.setOnCheckedChangeListener { _, _ -> syncForceSwitch() }
@@ -229,38 +235,7 @@ class DemoActivity : Activity() {
                             val body = ensureLiveSection(key)
                             sectionPlaceholders.remove(key)?.let { body.removeView(it) }
                             markSectionActive(key)
-                            val live = liveRow(key, body)
-                            val shown = if (text.length > 800) {
-                                // Cut at a line boundary so the visible window
-                                // doesn't jump mid-word as tokens stream in.
-                                val tail = text.takeLast(800)
-                                tail.substringAfter("\n", tail)
-                            } else text
-                            // Raw decode snapshots carry no formatting — keep
-                            // them plain text. Attaching the header as a bold
-                            // span while the body stays raw preserves the
-                            // section look without HTML round-tripping, which
-                            // shreds model punctuation (<, >, &) into entities.
-                            val header = "Decoding $label…\n"
-                            val next = android.text.SpannableString(header + shown).apply {
-                                setSpan(
-                                    android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
-                                    0, header.length,
-                                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-                                )
-                            }
-                            if (live.text.toString() != next.toString()) {
-                                // Suppress the section's layout transition for
-                                // per-token paints: height changes would
-                                // otherwise slide-down on every token.
-                                // BufferType.SPANNABLE: setTextIsSelectable +
-                                // spannable crashes on some OEM builds without it.
-                                val lt = body.layoutTransition
-                                body.layoutTransition = null
-                                live.setText(next, TextView.BufferType.SPANNABLE)
-                                body.layoutTransition = lt
-                            }
-                            sectionStreamLen[key] = text.length
+                            renderLiveFields(key, body, label, RunResultFormat.liveFields(label, text), text)
                             sectionCounts[key]?.text = "${body.childCount}"
                         }
                         return
@@ -443,6 +418,8 @@ class DemoActivity : Activity() {
             sectionCounts.clear()
             sectionChevrons.clear()
             sectionLiveViews.clear()
+        sectionLiveStatus.clear()
+        sectionLiveFieldViews.clear()
             sectionPlaceholders.clear()
             sectionTimers.clear()
             sectionStartMs.clear()
@@ -467,7 +444,7 @@ class DemoActivity : Activity() {
                 selected.contains("benchmark", ignoreCase = true) -> InferenceService.PROVIDER_BOTH
                 else -> InferenceService.PROVIDER_XNNPACK
             }
-            InferenceService.startRun(this, raw, bypassSwitch.isChecked, forceAllSwitch.isChecked, provider, promptSetSwitch.isChecked)
+            InferenceService.startRun(this, raw, bypassSwitch.isChecked, forceAllSwitch.isChecked, provider, promptSetSwitch.isChecked, answerLocalSwitch.isChecked)
         }
     }
 
@@ -686,11 +663,10 @@ class DemoActivity : Activity() {
                 val body = ensureLiveSection(key)
                 sectionPlaceholders.remove(key)?.let { body.removeView(it) }
                 markSectionActive(key)
-                // Never clobber an active decode stream with a short status
-                // line: the finished card replaces the live row on completion.
-                if (!sectionLiveViews.containsKey(key) || (sectionStreamLen[key] ?: 0) == 0) {
-                    liveRow(key, body).text = line.substringAfter("] ", line).trim()
-                }
+                // Status lines own a dedicated row above the stream
+                // container, so they never clobber an active decode stream
+                // (or vice versa).
+                liveStatusRow(key, body).text = line.substringAfter("] ", line).trim()
                 sectionCounts[key]?.text = "${body.childCount}"
             } ?: run {
                 overallStatus = line
@@ -730,6 +706,8 @@ class DemoActivity : Activity() {
         sectionCounts.clear()
         sectionChevrons.clear()
         sectionLiveViews.clear()
+        sectionLiveStatus.clear()
+        sectionLiveFieldViews.clear()
         sectionPlaceholders.clear()
         sectionTimers.clear()
         sectionStartMs.clear()
@@ -835,19 +813,15 @@ class DemoActivity : Activity() {
         }
     }
 
-    // The single in-section live row per stage: decode streams and stage
-    // status lines share it (last writer wins) until the finished card
-    // supersedes it. Body text matches the finished card bodies (13sp,
-    // regular) — only the "Decoding …" header is bold. Selectable, like
-    // every other body block in the app.
-    private fun liveRow(key: String, body: LinearLayout): TextView =
+    // Live per-section stream container: decode snapshots render as
+    // formatted field blocks (HEAT/INJECTION/…, STATUS/DRIFT/…, Draft,
+    // Reply) instead of one raw paragraph, with a separate status row for
+    // stage progress lines so the two never clobber each other. The
+    // finished card replaces the whole container on completion.
+    private fun liveBlock(key: String, body: LinearLayout): LinearLayout =
         sectionLiveViews.getOrPut(key) {
-            TextView(this).apply {
-                textSize = 13f
-                setTextColor(getColor(R.color.gatekeeper_text))
-                setBackgroundResource(R.drawable.field_bg)
-                setPadding(dp(8), dp(8), dp(8), dp(8))
-                setTextIsSelectable(true)
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -855,6 +829,103 @@ class DemoActivity : Activity() {
                 body.addView(this)
             }
         }
+
+    private fun liveStatusRow(key: String, body: LinearLayout): TextView =
+        sectionLiveStatus.getOrPut(key) {
+            TextView(this).apply {
+                textSize = 12f
+                setTextColor(getColor(R.color.gatekeeper_muted))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(6) }
+                // Status sits above the stream container.
+                body.addView(this, 0)
+            }
+        }
+
+    // Syncs the section's field blocks to the parsed snapshot: creates
+    // rows for new keys, updates changed values in place, and drops keys
+    // gone from the stream. Per-value diffing keeps per-token paints to a
+    // single TextView so layout never reflows the whole section.
+    private fun renderLiveFields(
+        key: String,
+        body: LinearLayout,
+        label: String,
+        fields: List<Pair<String, String>>,
+        raw: String
+    ) {
+        val block = liveBlock(key, body)
+        val views = sectionLiveFieldViews.getOrPut(key) { LinkedHashMap() }
+        val lt = body.layoutTransition
+        body.layoutTransition = null
+        try {
+            val seen = LinkedHashSet<String>()
+            // Header carries the decoding turn; the body rows carry values.
+            seen.add("§header")
+            val header = views.getOrPut("§header") {
+                TextView(this).apply {
+                    textSize = 12f
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    setTextColor(getColor(R.color.gatekeeper_muted))
+                    block.addView(this)
+                }
+            }
+            val headerText = "Decoding $label…"
+            if (header.text.toString() != headerText) header.text = headerText
+            val rows = if (fields.isNotEmpty()) fields else listOf("Stream" to raw)
+            for ((name, value) in rows) {
+                if (value.isBlank()) continue
+                seen.add(name)
+                val valueView = views.getOrPut(name) {
+                    val labelView = TextView(this).apply {
+                        text = name
+                        textSize = 12f
+                        setTypeface(typeface, android.graphics.Typeface.BOLD)
+                        setTextColor(getColor(R.color.gatekeeper_mint))
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply { topMargin = dp(8) }
+                        block.addView(this)
+                    }
+                    labelView.contentDescription = "$name field"
+                    TextView(this).apply {
+                        textSize = 13f
+                        setTextIsSelectable(true)
+                        setTextColor(getColor(R.color.gatekeeper_text))
+                        setBackgroundResource(R.drawable.field_bg)
+                        setPadding(dp(8), dp(8), dp(8), dp(8))
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply { topMargin = dp(4) }
+                        block.addView(this)
+                    }
+                }
+                if (valueView.text.toString() != value) {
+                    valueView.setText(value, TextView.BufferType.SPANNABLE)
+                }
+            }
+            val stale = views.keys.filter { it !in seen }
+            for (name in stale) {
+                // Each field owns a label+value pair except the header.
+                val idx = block.indexOfChild(views[name])
+                if (idx >= 0) {
+                    block.removeViewAt(idx)
+                    if (idx > 0) {
+                        val prev = block.getChildAt(idx - 1)
+                        if (prev is TextView && prev.contentDescription?.toString() == "$name field") {
+                            block.removeViewAt(idx - 1)
+                        }
+                    }
+                }
+                views.remove(name)
+            }
+        } finally {
+            body.layoutTransition = lt
+        }
+    }
 
     // Engine turn labels ("compress#2", "audit#1", "answer") to the live
     // section their tokens decode into. Unknown labels stream nowhere.
@@ -1009,6 +1080,8 @@ class DemoActivity : Activity() {
         // freezes the section clock at its final value.
         sectionPlaceholders.remove(item.label)?.let { body.removeView(it) }
         sectionLiveViews.remove(item.label)?.let { body.removeView(it) }
+        sectionLiveStatus.remove(item.label)?.let { body.removeView(it) }
+        sectionLiveFieldViews.remove(item.label)
         sectionStreamLen.remove(item.label)
         freezeSectionTimer(item.label)
         // Completion lines carry no Q/A: a same-label stub from an earlier

@@ -28,7 +28,10 @@ data class StepExecutionRecord(
     val status: StepStatus,
     val reason: String = "",
     val iterations: Int = 0,
-    val durationMs: Long = 0L
+    val durationMs: Long = 0L,
+    // Local LLM tokens spent by this step (0 when the step made no call).
+    val promptTokens: Int = 0,
+    val completionTokens: Int = 0
 )
 
 data class ExecutionTelemetry(
@@ -46,7 +49,10 @@ data class ExecutionTelemetry(
     val fallbackReason: String? = null,
     val maxRetriesExhausted: Boolean = false,
     val expansionGuardFailed: Boolean = false,
-    val totalDurationMs: Long = 0L
+    val totalDurationMs: Long = 0L,
+    // Local LLM token totals across every stage call in the run.
+    val totalPromptTokens: Int = 0,
+    val totalCompletionTokens: Int = 0
 )
 
 data class GatekeeperConfig(
